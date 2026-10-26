@@ -1208,7 +1208,9 @@ static int run_choose(const char *at, const char *body, const char *end)
     }
     trace(TRACE_PICK, c[pick].name, call_depth, 0);
     int r = call_def(d);
-    trace(TRACE_PICK_END, c[pick].name, call_depth, 0);
+    if (r != RUN_ABORT) { /* an activity cut short by a pause has not ended; RESUME tidies up */
+        trace(TRACE_PICK_END, c[pick].name, call_depth, 0);
+    }
     return r;
 }
 

@@ -22,6 +22,7 @@ add_library(core STATIC
     ${FW}/typing.c
     ${FW}/script.c
     sim/editor_model.c
+    sim/invariants.c
 )
 target_include_directories(core PUBLIC ${FW} sim)
 if(NOT MSVC)
