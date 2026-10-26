@@ -1,0 +1,368 @@
+# Simulates a C# developer working in VS Code, looking things up in Chrome now and then.
+# Pools of code, comments and queries live in snippets.txt. Setup: docs/setup.md.
+#
+# Settings (top level):
+#   SCREEN w h scale%        primary monitor resolution and effective UI scale
+#   REGION name x0 y0 x1 y1  rectangle in px at 100% scale; +N from left/top, -N from right/bottom
+#   MAXGAP s                 longest allowed gap between inputs (sign of life after 90 s..MAXGAP)
+#   SEARCHGAP s              minimum spacing between Chrome searches
+#   DEF name ... END         activity or subroutine; MAIN runs forever, RESUME runs after a pause
+#
+# Commands inside DEF:
+#   KEY combo | TYPE text | TYPE @pool | CODE pool [middef] | WAIT ms | IDLE min max
+#   GOTO r | HOVER r ms | CLICK [LEFT|RIGHT|MIDDLE] | DBLCLICK | DRAGSELECT r
+#   SCROLL n (positive = up) | READSCROLL n (down, inside the app in front) | OUTLINE r
+#   FOCUS code|chrome | TERMINAL open|close | SEARCH pool | ENDSEARCH
+#   CALL name | CHOOSE (weight name lines) END | MAYBE pct END | REPEAT min max END
+#   WHEN LINES > n END | LINES n | LINES +n | LOOP (MAIN only)
+#
+# Invariant: every activity starts with Esc and ends with VS Code in front, the editor focused,
+# the panel closed, no search tab open and Chrome on its first tab. Any order is then safe.
+# Clicks are never sent while Chrome is in front. Typing into the editor always goes to
+# Scratch.cs, opened first with open_scratch.
+
+SCREEN 1920 1080 100
+MAXGAP 210
+SEARCHGAP 360
+
+# Default VS Code layout, maximised, Windows 11 taskbar (48 px) visible. Check with calibrate.
+REGION editor      +440 +115 -140 -90
+REGION explorer    +70  +115 +280 +260
+REGION terminal    +440 -250 -60  -90
+REGION chrome_page +40  +130 -40  -70
+
+DEF MAIN
+# Uncomment once after changing SCREEN to check the regions against the real screen:
+# CALL calibrate
+WHEN LINES > 120
+CALL reset_scratch
+END
+CHOOSE
+40 write_code
+12 edit_refactor
+13 navigate
+8 terminal_check
+15 lookup
+12 think
+END
+LOOP
+END
+
+DEF RESUME
+ENDSEARCH
+FOCUS code
+KEY ESC
+TERMINAL close
+GOTO editor
+CLICK
+END
+
+DEF calibrate
+OUTLINE editor
+OUTLINE explorer
+OUTLINE terminal
+OUTLINE chrome_page
+END
+
+DEF open_scratch
+KEY CTRL+P
+IDLE 400 900
+TYPE Scratch.cs
+IDLE 300 700
+KEY ENTER
+IDLE 500 1000
+END
+
+DEF reset_scratch
+KEY ESC
+CALL open_scratch
+KEY CTRL+A
+IDLE 400 900
+KEY DELETE
+IDLE 1500 3000
+CODE skeleton
+IDLE 800 1600
+KEY CTRL+S
+IDLE 1500 3000
+LINES 0
+END
+
+# ---- write code: append a small type at the end of Scratch.cs ----
+
+DEF write_code
+KEY ESC
+CALL open_scratch
+KEY CTRL+END
+KEY ENTER
+IDLE 3000 15000
+MAYBE 50
+TYPE @comments
+KEY ENTER
+LINES +1
+END
+CODE types peek
+LINES +1
+IDLE 800 2000
+KEY CTRL+S
+IDLE 1500 3500
+READSCROLL 3
+IDLE 1000 3000
+GOTO editor
+CLICK
+END
+
+# Midway through typing: scroll up, look at something, scroll back. Pointer only.
+DEF peek
+SCROLL 3
+IDLE 800 2000
+HOVER editor 1200
+SCROLL -3
+IDLE 300 800
+END
+
+# ---- edit and refactor ----
+
+DEF edit_refactor
+KEY ESC
+CALL open_scratch
+CHOOSE
+30 edit_word
+20 edit_line
+15 edit_move_line
+15 edit_copy_paste
+10 edit_rename
+10 edit_format
+END
+IDLE 600 1500
+KEY CTRL+S
+IDLE 1000 2500
+GOTO editor
+CLICK
+END
+
+DEF edit_word
+GOTO editor
+IDLE 400 1200
+DBLCLICK
+IDLE 500 1200
+TYPE @identifiers
+IDLE 800 2000
+MAYBE 30
+KEY CTRL+Z
+END
+END
+
+DEF edit_line
+GOTO editor
+CLICK
+IDLE 400 900
+KEY HOME
+KEY SHIFT+END
+IDLE 600 1400
+CHOOSE
+40 edit_duplicate
+40 edit_comment
+20 edit_delete_undo
+END
+END
+
+DEF edit_duplicate
+KEY SHIFT+ALT+DOWN
+LINES +1
+IDLE 800 2000
+MAYBE 50
+KEY CTRL+Z
+END
+END
+
+DEF edit_comment
+KEY CTRL+SLASH
+IDLE 1500 4000
+KEY CTRL+SLASH
+END
+
+DEF edit_delete_undo
+KEY CTRL+SHIFT+K
+IDLE 1200 3000
+KEY CTRL+Z
+END
+
+DEF edit_move_line
+GOTO editor
+CLICK
+IDLE 500 1200
+KEY ALT+UP
+IDLE 800 2000
+KEY ALT+DOWN
+END
+
+DEF edit_copy_paste
+GOTO editor
+DRAGSELECT editor
+IDLE 400 900
+KEY CTRL+C
+IDLE 800 2000
+GOTO editor
+CLICK
+IDLE 400 900
+KEY CTRL+V
+IDLE 1500 3500
+KEY CTRL+Z
+END
+
+DEF edit_rename
+GOTO editor
+DBLCLICK
+IDLE 500 1200
+KEY F2
+IDLE 700 1500
+TYPE @identifiers
+IDLE 400 900
+KEY ENTER
+IDLE 1500 3000
+END
+
+DEF edit_format
+KEY SHIFT+ALT+F
+IDLE 1500 3500
+READSCROLL 2
+END
+
+# ---- navigate and read ----
+
+DEF navigate
+KEY ESC
+KEY CTRL+P
+IDLE 500 1100
+TYPE @files
+IDLE 400 900
+KEY ENTER
+IDLE 1500 3000
+READSCROLL 5
+IDLE 1000 3000
+MAYBE 50
+HOVER editor 1500
+CLICK
+IDLE 400 900
+KEY F12
+IDLE 2000 5000
+READSCROLL 3
+KEY ALT+LEFT
+IDLE 800 1600
+END
+MAYBE 35
+KEY CTRL+SHIFT+F
+IDLE 600 1200
+TYPE @find_terms
+IDLE 1500 3000
+REPEAT 1 3
+KEY F4
+IDLE 1200 3000
+END
+KEY ESC
+KEY CTRL+SHIFT+E
+IDLE 500 1000
+END
+MAYBE 20
+GOTO explorer
+CLICK
+IDLE 1500 3000
+END
+CALL open_scratch
+GOTO editor
+CLICK
+END
+
+# ---- terminal check ----
+
+DEF terminal_check
+KEY ESC
+TERMINAL open
+IDLE 1200 2500
+TYPE @terminal_cmds
+IDLE 300 800
+KEY ENTER
+IDLE 4000 10000
+GOTO terminal
+READSCROLL 2
+IDLE 2000 5000
+TYPE clear
+KEY ENTER
+IDLE 800 1500
+TERMINAL close
+IDLE 400 900
+KEY CTRL+1
+IDLE 500 1000
+GOTO editor
+CLICK
+END
+
+# ---- look something up in Chrome (keyboard, hover and scroll only) ----
+
+DEF lookup
+KEY ESC
+FOCUS chrome
+IDLE 800 1800
+MAYBE 60
+SEARCH queries
+IDLE 2500 5000
+READSCROLL 4
+HOVER chrome_page 1500
+READSCROLL 3
+IDLE 2000 5000
+ENDSEARCH
+IDLE 600 1200
+END
+REPEAT 1 3
+KEY CTRL+TAB
+IDLE 1500 3000
+READSCROLL 4
+HOVER chrome_page 1200
+IDLE 2000 6000
+END
+KEY CTRL+1
+IDLE 600 1200
+FOCUS code
+IDLE 400 900
+GOTO editor
+CLICK
+END
+
+# ---- think: sit back, drift, glance ----
+
+DEF think
+KEY ESC
+IDLE 2000 6000
+CHOOSE
+40 think_drift
+30 think_scroll
+20 think_hover
+10 think_long
+END
+IDLE 2000 8000
+GOTO editor
+CLICK
+END
+
+DEF think_drift
+GOTO editor
+IDLE 3000 10000
+GOTO editor
+END
+
+DEF think_scroll
+SCROLL 1
+IDLE 2000 6000
+SCROLL -1
+IDLE 2000 6000
+END
+
+DEF think_hover
+HOVER editor 2500
+IDLE 2000 8000
+END
+
+# A long lean-back; the idle guard keeps every gap under MAXGAP.
+DEF think_long
+IDLE 120000 230000
+END

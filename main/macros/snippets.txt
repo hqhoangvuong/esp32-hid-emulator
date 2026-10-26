@@ -1,0 +1,439 @@
+# Pools for developer.txt. POOL name ... END holds snippets separated by lines that are exactly
+# ---; POOL name LINES makes every non-blank line one item. Bodies are literal: '#' lines and
+# blank lines inside a POOL are content, and the body ends at a line that is exactly END.
+#
+# Snippet grammar (enforced by tools/check_script), so VS Code's auto-closed brackets land
+# where the text says:
+#   - no leading or trailing whitespace, no tabs, printable ASCII, never ///
+#   - a line is exactly } or };, or is balanced, or is balanced up to a final {
+#   - no blank line and no { line directly before a } line (write { } on one line instead)
+#   - so no "} else {" or "} catch {": put the closing brace on its own line
+# Types may use only the implicit usings (System, System.Linq, System.Collections.Generic,
+# System.IO, System.Threading, System.Threading.Tasks).
+
+POOL skeleton
+namespace Scratch;
+END
+
+POOL types
+public class RetryPolicy {
+public int MaxAttempts { get; init; } = 3;
+public async Task<T> RunAsync<T>(Func<Task<T>> action) {
+for (var attempt = 1; ; attempt++) {
+try {
+return await action();
+}
+catch (Exception) when (attempt < MaxAttempts) {
+await Task.Delay(100 * attempt);
+}
+}
+}
+}
+---
+public class LruCache<TKey, TValue> where TKey : notnull {
+private readonly int _capacity;
+private readonly Dictionary<TKey, LinkedListNode<(TKey Key, TValue Value)>> _map = new();
+private readonly LinkedList<(TKey Key, TValue Value)> _order = new();
+public LruCache(int capacity) => _capacity = capacity;
+public bool TryGet(TKey key, out TValue value) {
+if (_map.TryGetValue(key, out var node)) {
+_order.Remove(node);
+_order.AddFirst(node);
+value = node.Value.Value;
+return true;
+}
+value = default!;
+return false;
+}
+public void Put(TKey key, TValue value) {
+if (_map.Remove(key, out var old)) {
+_order.Remove(old);
+}
+else if (_map.Count >= _capacity) {
+_map.Remove(_order.Last!.Value.Key);
+_order.RemoveLast();
+}
+_map[key] = _order.AddFirst((key, value));
+}
+}
+---
+public static class SlugText {
+public static string ToSlug(string text) {
+var parts = text.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+return string.Join("-", parts);
+}
+}
+---
+public readonly record struct Money(decimal Amount, string Currency) {
+public Money Add(Money other) {
+if (other.Currency != Currency) {
+throw new InvalidOperationException("currency mismatch");
+}
+return this with { Amount = Amount + other.Amount };
+}
+public override string ToString() => $"{Amount:0.00} {Currency}";
+}
+---
+public sealed class Timing : IDisposable {
+private readonly string _name;
+private readonly System.Diagnostics.Stopwatch _watch = System.Diagnostics.Stopwatch.StartNew();
+public Timing(string name) => _name = name;
+public void Dispose() {
+_watch.Stop();
+Console.WriteLine($"{_name} took {_watch.ElapsedMilliseconds} ms");
+}
+}
+---
+public static class ChunkExtensions {
+public static IEnumerable<List<T>> InChunks<T>(this IEnumerable<T> source, int size) {
+var chunk = new List<T>(size);
+foreach (var item in source) {
+chunk.Add(item);
+if (chunk.Count == size) {
+yield return chunk;
+chunk = new List<T>(size);
+}
+}
+if (chunk.Count > 0) {
+yield return chunk;
+}
+}
+}
+---
+public class TokenBucket {
+private readonly int _capacity;
+private double _tokens;
+private DateTime _last = DateTime.UtcNow;
+public TokenBucket(int capacity) {
+_capacity = capacity;
+_tokens = capacity;
+}
+public bool TryTake(double ratePerSecond) {
+var now = DateTime.UtcNow;
+_tokens = Math.Min(_capacity, _tokens + (now - _last).TotalSeconds * ratePerSecond);
+_last = now;
+if (_tokens < 1) {
+return false;
+}
+_tokens -= 1;
+return true;
+}
+}
+---
+public readonly struct Result<T> {
+public T? Value { get; }
+public string? Error { get; }
+public bool Ok => Error is null;
+private Result(T? value, string? error) {
+Value = value;
+Error = error;
+}
+public static Result<T> Success(T value) => new(value, null);
+public static Result<T> Failure(string error) => new(default, error);
+}
+---
+public static class RangeParser {
+public static (int Start, int End) Parse(string text) {
+var dash = text.IndexOf('-');
+if (dash < 0) {
+var single = int.Parse(text);
+return (single, single);
+}
+return (int.Parse(text[..dash]), int.Parse(text[(dash + 1)..]));
+}
+}
+---
+public class EventBus {
+private readonly Dictionary<Type, List<Action<object>>> _handlers = new();
+public void Subscribe<T>(Action<T> handler) {
+if (!_handlers.TryGetValue(typeof(T), out var list)) {
+list = new List<Action<object>>();
+_handlers[typeof(T)] = list;
+}
+list.Add(e => handler((T)e));
+}
+public void Publish<T>(T message) where T : notnull {
+if (_handlers.TryGetValue(typeof(T), out var list)) {
+foreach (var handler in list) {
+handler(message);
+}
+}
+}
+}
+---
+public record Temperature(double Celsius) {
+public double Fahrenheit => Celsius * 9 / 5 + 32;
+public static Temperature FromFahrenheit(double f) => new((f - 32) * 5 / 9);
+public bool IsFreezing => Celsius <= 0;
+public override string ToString() => $"{Celsius:0.0} C";
+}
+---
+public class Page<T> {
+public IReadOnlyList<T> Items { get; }
+public int Number { get; }
+public int TotalPages { get; }
+public Page(IReadOnlyList<T> all, int number, int size) {
+Number = number;
+TotalPages = (all.Count + size - 1) / size;
+Items = all.Skip((number - 1) * size).Take(size).ToList();
+}
+public bool HasNext => Number < TotalPages;
+}
+---
+public sealed class Debouncer {
+private readonly TimeSpan _wait;
+private CancellationTokenSource? _cts;
+public Debouncer(TimeSpan wait) => _wait = wait;
+public async Task RunAsync(Func<Task> action) {
+_cts?.Cancel();
+_cts = new CancellationTokenSource();
+var token = _cts.Token;
+try {
+await Task.Delay(_wait, token);
+await action();
+}
+catch (TaskCanceledException) {
+return;
+}
+}
+}
+---
+public static class WordStats {
+public static Dictionary<string, int> Count(string text) {
+var words = text.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+return words.GroupBy(w => w).ToDictionary(g => g.Key, g => g.Count());
+}
+public static string Longest(string text) {
+return text.Split(' ').OrderByDescending(w => w.Length).FirstOrDefault() ?? "";
+}
+}
+---
+public class Matrix {
+private readonly double[,] _cells;
+public Matrix(int rows, int cols) => _cells = new double[rows, cols];
+public double this[int r, int c] {
+get => _cells[r, c];
+set => _cells[r, c] = value;
+}
+public int Rows => _cells.GetLength(0);
+public int Cols => _cells.GetLength(1);
+}
+---
+public static class Guard {
+public static string NotBlank(string? value, string name) {
+if (string.IsNullOrWhiteSpace(value)) {
+throw new ArgumentException($"{name} must not be blank", name);
+}
+return value;
+}
+public static int InRange(int value, int min, int max) {
+if (value < min || value > max) {
+throw new ArgumentOutOfRangeException(nameof(value));
+}
+return value;
+}
+}
+---
+public class WorkQueue {
+private readonly Queue<string> _jobs = new();
+public int Processed { get; private set; }
+public void Enqueue(string job) => _jobs.Enqueue(job);
+public void Drain(Action<string> handle) {
+while (_jobs.TryDequeue(out var job)) {
+handle(job);
+Processed++;
+}
+}
+}
+---
+public static class EnvConfig {
+public static int GetInt(string key, int fallback) {
+var raw = Environment.GetEnvironmentVariable(key);
+return int.TryParse(raw, out var value) ? value : fallback;
+}
+public static bool GetFlag(string key) {
+var raw = Environment.GetEnvironmentVariable(key);
+return raw is "1" or "true" or "yes";
+}
+}
+---
+public class MovingAverage {
+private readonly Queue<double> _window = new();
+private readonly int _size;
+private double _sum;
+public MovingAverage(int size) => _size = size;
+public double Add(double value) {
+_window.Enqueue(value);
+_sum += value;
+if (_window.Count > _size) {
+_sum -= _window.Dequeue();
+}
+return _sum / _window.Count;
+}
+}
+---
+public readonly record struct SemVer(int Major, int Minor, int Patch) : IComparable<SemVer> {
+public static SemVer Parse(string text) {
+var p = text.Split('.').Select(int.Parse).ToArray();
+return new SemVer(p[0], p[1], p[2]);
+}
+public int CompareTo(SemVer other) {
+var major = Major.CompareTo(other.Major);
+if (major != 0) {
+return major;
+}
+var minor = Minor.CompareTo(other.Minor);
+return minor != 0 ? minor : Patch.CompareTo(other.Patch);
+}
+}
+---
+public static class FizzBuzz {
+public static string Say(int n) {
+if (n % 15 == 0) {
+return "FizzBuzz";
+}
+if (n % 3 == 0) {
+return "Fizz";
+}
+return n % 5 == 0 ? "Buzz" : n.ToString();
+}
+}
+---
+public static class PathTools {
+public static string ChangeExtension(string path, string extension) {
+var dir = Path.GetDirectoryName(path) ?? "";
+var name = Path.GetFileNameWithoutExtension(path);
+return Path.Combine(dir, name + "." + extension.TrimStart('.'));
+}
+public static bool IsHidden(string path) => Path.GetFileName(path).StartsWith('.');
+}
+---
+public class Inventory {
+private readonly Dictionary<string, int> _stock = new();
+public void Add(string sku, int count) {
+_stock[sku] = _stock.GetValueOrDefault(sku) + count;
+}
+public bool TryRemove(string sku, int count) {
+if (_stock.GetValueOrDefault(sku) < count) {
+return false;
+}
+_stock[sku] -= count;
+return true;
+}
+public int Total => _stock.Values.Sum();
+}
+---
+public static class Retry {
+public static T Times<T>(int attempts, Func<T> action) {
+for (var i = 1; ; i++) {
+try {
+return action();
+}
+catch (IOException) when (i < attempts) {
+Thread.Sleep(50 * i);
+}
+}
+}
+}
+END
+
+POOL comments LINES
+// todo: cache the parsed result
+// keep this allocation free on the hot path
+// this runs once per request
+// revisit after the next release
+// handle the empty input case first
+// the caller owns the returned list
+// assumes the list is already sorted
+// fast path for small inputs
+// see the retry notes in the readme
+// not thread safe, wrap it if needed
+// validate before touching the database
+// returns null when nothing matches
+// split this up if it grows any further
+// numbers come from the old service
+// measured: about two ms per call
+// keep in sync with the api contract
+END
+
+POOL identifiers LINES
+count
+total
+result
+buffer
+index
+retries
+timeout
+payload
+cache
+items
+value
+offset
+entry
+builder
+options
+handler
+request
+response
+cursor
+limit
+token
+parser
+END
+
+POOL files LINES
+Helpers.cs
+Program.cs
+Scratch.cs
+END
+
+POOL terminal_cmds LINES
+dotnet build
+git status
+git diff --stat
+git log --oneline -5
+END
+
+POOL find_terms LINES
+Greeting
+Clamp
+Slugify
+RetryAsync
+Chunk
+Helpers
+WriteLine
+Scratch
+END
+
+POOL queries LINES
+c# record vs class
+linq groupby multiple keys
+dotnet list package outdated
+c# async stream example
+git rebase interactive squash
+git restore staged file
+vscode multi cursor shortcut
+c# pattern matching switch expression
+dotnet user secrets
+c# span vs memory
+efcore no tracking query
+c# cancellation token timeout
+git cherry pick range
+c# string interpolation format
+dotnet test filter by name
+c# nullable reference types warning
+linq selectmany example
+git stash specific file
+vscode format on save csharp
+c# dictionary getvalueordefault
+dotnet publish single file
+c# readonly struct performance
+git log graph oneline
+c# init only setter
+dotnet watch run
+c# primary constructor class
+git bisect example
+c# configureawait false
+vscode keyboard shortcuts windows
+c# iasyncenumerable cancellation
+END

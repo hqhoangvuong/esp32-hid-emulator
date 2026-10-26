@@ -29,3 +29,4 @@ if(NOT MSVC)
 endif()
 
 add_subdirectory(sim)
+add_subdirectory(check_script)

@@ -780,6 +780,11 @@ const script_settings_t *script_settings(void)
     return &settings;
 }
 
+bool script_has_def(const char *name)
+{
+    return find_def_c(name) != NULL;
+}
+
 bool script_region_spec(const char *name, region_t *out)
 {
     span_t s = {name, strlen(name)};

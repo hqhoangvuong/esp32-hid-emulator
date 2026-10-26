@@ -20,6 +20,7 @@ bool script_load(const char *dev, size_t dev_len, const char *snip, size_t snip_
 int script_problems(void);
 const script_settings_t *script_settings(void);
 bool script_region_spec(const char *name, region_t *out);
+bool script_has_def(const char *name);
 
 int script_pool_total(void);
 const char *script_pool_name(int i, size_t *len);
