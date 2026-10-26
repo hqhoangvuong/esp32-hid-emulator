@@ -47,6 +47,23 @@ static int nregions;
 static script_settings_t settings;
 static int problems;
 
+#define MAX_CALL_DEPTH  8
+#define MAX_BLOCK_DEPTH 8
+#define MAX_CHOOSE_MEM  32
+
+static script_state_t state;
+static void (*trace_fn)(const script_event_t *ev, void *ctx);
+static void *trace_ctx;
+static int call_depth;
+/* Last pick of each CHOOSE, keyed by the CHOOSE line. */
+static struct {
+    const char *at;
+    int last;
+} choose_mem[MAX_CHOOSE_MEM];
+static int nchoose_mem;
+
+static void reset_run_state(void);
+
 /* ---- text helpers ---- */
 
 typedef struct {
@@ -717,6 +734,7 @@ bool script_load(const char *dev, size_t dev_len, const char *snip, size_t snip_
     snip_end = snip + snip_len;
     ndefs = npools = nregions = 0;
     problems = 0;
+    reset_run_state();
     settings.w = 0;
     settings.h = 0;
     settings.scale = 0;
@@ -761,4 +779,337 @@ bool script_region_spec(const char *name, region_t *out)
         *out = r->spec;
     }
     return r != NULL;
+}
+
+/* ---- interpreter ---- */
+
+enum { RUN_OK, RUN_ABORT, RUN_LOOP };
+
+static void reset_run_state(void)
+{
+    memset(&state, 0, sizeof state);
+    state.fg = APP_CODE;
+    nchoose_mem = 0;
+    call_depth = 0;
+}
+
+void script_set_trace(void (*fn)(const script_event_t *ev, void *ctx), void *ctx)
+{
+    trace_fn = fn;
+    trace_ctx = ctx;
+}
+
+const script_state_t *script_state(void)
+{
+    return &state;
+}
+
+static void trace(script_trace_t kind, span_t name, int depth, int index)
+{
+    if (trace_fn) {
+        script_event_t ev = {kind, name.p, name.n, depth, index};
+        trace_fn(&ev, trace_ctx);
+    }
+}
+
+static int run_block(const char *p, const char *end, int block_depth);
+
+/* Run a DEF one level deeper. LOOP only means something in MAIN. */
+static int call_def(const def_t *d)
+{
+    if (call_depth >= MAX_CALL_DEPTH) {
+        hid_out_log("script: call depth over %d, skipping %.*s", MAX_CALL_DEPTH, (int)d->name.n, d->name.p);
+        return RUN_OK;
+    }
+    call_depth++;
+    int r = run_block(d->body, d->end, 0);
+    call_depth--;
+    if (r == RUN_LOOP && !is(d->name, "MAIN")) {
+        r = RUN_OK;
+    }
+    return r;
+}
+
+typedef struct {
+    span_t name;
+    int32_t weight;
+} choice_t;
+
+static int read_choices(const char *p, const char *end, choice_t *out, int max)
+{
+    int n = 0;
+    line_t l;
+    while (read_line(p, end, &l)) {
+        span_t args, c = command(&l, &args);
+        p = l.next;
+        int32_t w;
+        if (c.n && parse_uint(c, &w) && n < max) {
+            out[n].name = take(&args);
+            out[n].weight = w;
+            n++;
+        }
+    }
+    return n;
+}
+
+/* Weights whose no-immediate-repeat chain has long-run shares equal to the configured ones.
+ * Shares of P(j|i) = v_j / (1 - v_i) are proportional to v_j (1 - v_j), so solve
+ * v_j (1 - v_j) = k w_j with sum v = 1 by fixed-point iteration (every w_j < 0.5). */
+static void compensate(const choice_t *c, int n, float *v)
+{
+    float w[MAX_CHOICES], sum = 0;
+    for (int i = 0; i < n; i++) {
+        sum += (float)c[i].weight;
+    }
+    for (int i = 0; i < n; i++) {
+        w[i] = sum > 0 ? (float)c[i].weight / sum : 1.0f / (float)n;
+        v[i] = w[i];
+    }
+    for (int it = 0; it < 40; it++) {
+        float s = 0;
+        for (int i = 0; i < n; i++) {
+            float denom = 1.0f - v[i];
+            v[i] = w[i] / (denom > 0.01f ? denom : 0.01f);
+            s += v[i];
+        }
+        for (int i = 0; i < n; i++) {
+            v[i] /= s;
+        }
+    }
+}
+
+static int *choose_last(const char *at)
+{
+    for (int i = 0; i < nchoose_mem; i++) {
+        if (choose_mem[i].at == at) {
+            return &choose_mem[i].last;
+        }
+    }
+    if (nchoose_mem == MAX_CHOOSE_MEM) {
+        nchoose_mem = 0; /* forget the oldest rather than fail */
+    }
+    choose_mem[nchoose_mem].at = at;
+    choose_mem[nchoose_mem].last = -1;
+    return &choose_mem[nchoose_mem++].last;
+}
+
+static int run_choose(const char *at, const char *body, const char *end)
+{
+    choice_t c[MAX_CHOICES];
+    int n = read_choices(body, end, c, MAX_CHOICES);
+    if (n == 0) {
+        return RUN_OK;
+    }
+    int *last = choose_last(at);
+    int pick = 0;
+    if (n > 1) {
+        float v[MAX_CHOICES], total = 0;
+        compensate(c, n, v);
+        for (int i = 0; i < n; i++) {
+            total += i == *last ? 0 : v[i];
+        }
+        float r = (float)(hid_out_rand32() >> 8) / 16777216.0f * total;
+        pick = -1;
+        for (int i = 0; i < n; i++) {
+            if (i == *last) {
+                continue;
+            }
+            pick = i;
+            if (r < v[i]) {
+                break;
+            }
+            r -= v[i];
+        }
+    }
+    *last = pick;
+    const def_t *d = find_def(c[pick].name);
+    if (!d) {
+        return RUN_OK;
+    }
+    trace(TRACE_PICK, c[pick].name, call_depth, 0);
+    int r = call_def(d);
+    trace(TRACE_PICK_END, c[pick].name, call_depth, 0);
+    return r;
+}
+
+static int32_t arg_int(span_t *args)
+{
+    int32_t v = 0;
+    parse_int(take(args), &v);
+    return v;
+}
+
+/* Commands that are not blocks. */
+static int exec_cmd(span_t c, span_t args)
+{
+    if (is(c, "WAIT")) {
+        return rhythm_sleep((uint32_t)arg_int(&args)) ? RUN_OK : RUN_ABORT;
+    }
+    if (is(c, "IDLE")) {
+        uint32_t lo = (uint32_t)arg_int(&args), hi = (uint32_t)arg_int(&args);
+        uint32_t ms = rhythm_scale(rhythm_rand(lo, hi), rhythm_personality()->pause_pct);
+        return rhythm_sleep(ms) ? RUN_OK : RUN_ABORT;
+    }
+    if (is(c, "LINES")) {
+        int32_t v = 0;
+        parse_int(args, &v);
+        state.lines = args.n && args.p[0] == '+' ? state.lines + v : v;
+        return RUN_OK;
+    }
+    if (is(c, "CALL")) {
+        const def_t *d = find_def(args);
+        if (!d) {
+            return RUN_OK;
+        }
+        if (call_depth < MAX_CALL_DEPTH) {
+            trace(TRACE_CALL, d->name, call_depth + 1, 0);
+        }
+        return call_def(d);
+    }
+    hid_out_log("script: unknown command '%.*s'", (int)c.n, c.p);
+    return RUN_OK;
+}
+
+static int run_block(const char *p, const char *end, int block_depth)
+{
+    line_t l;
+    while (read_line(p, end, &l)) {
+        span_t args, c = command(&l, &args);
+        p = l.next;
+        if (c.n == 0 || is(c, "END")) {
+            continue;
+        }
+        if (rhythm_aborted()) {
+            return RUN_ABORT;
+        }
+        if (is_opener(c)) {
+            const char *bend = find_end(l.next, end);
+            const char *after = end;
+            if (bend) {
+                line_t el;
+                read_line(bend, end, &el);
+                after = el.next;
+            } else {
+                bend = end;
+            }
+            p = after;
+            if (block_depth + 1 > MAX_BLOCK_DEPTH) {
+                hid_out_log("script: block depth over %d, skipping %.*s", MAX_BLOCK_DEPTH, (int)c.n, c.p);
+                continue;
+            }
+            int r = RUN_OK;
+            if (is(c, "CHOOSE")) {
+                r = run_choose(l.p, l.next, bend);
+            } else if (is(c, "MAYBE")) {
+                if ((int32_t)rhythm_rand(0, 99) < arg_int(&args)) {
+                    r = run_block(l.next, bend, block_depth + 1);
+                }
+            } else if (is(c, "REPEAT")) {
+                uint32_t lo = (uint32_t)arg_int(&args), hi = (uint32_t)arg_int(&args);
+                for (uint32_t i = rhythm_rand(lo, hi); i > 0 && r == RUN_OK; i--) {
+                    r = run_block(l.next, bend, block_depth + 1);
+                }
+            } else { /* WHEN LINES > n */
+                take(&args);
+                take(&args);
+                if (state.lines > arg_int(&args)) {
+                    r = run_block(l.next, bend, block_depth + 1);
+                }
+            }
+            if (r != RUN_OK) {
+                return r;
+            }
+            continue;
+        }
+        if (is(c, "LOOP")) {
+            return RUN_LOOP;
+        }
+        int r = exec_cmd(c, args);
+        if (r != RUN_OK) {
+            return r;
+        }
+    }
+    return rhythm_aborted() ? RUN_ABORT : RUN_OK;
+}
+
+bool script_call(const char *name)
+{
+    const def_t *d = find_def_c(name);
+    if (!d) {
+        return true;
+    }
+    call_depth = 0;
+    return call_def(d) != RUN_ABORT;
+}
+
+static void call_top(const def_t *d)
+{
+    call_depth = 0;
+    trace(TRACE_CALL, d->name, 0, 0);
+    call_def(d);
+}
+
+void script_run(bool (*keep_going)(void))
+{
+    const def_t *main_def = find_def_c("MAIN");
+    const def_t *resume = find_def_c("RESUME");
+    if (!main_def) {
+        return;
+    }
+    rhythm_sleep(rhythm_rand(10000, 15000));
+    span_t ed = {"editor", 6};
+    const region_ent_t *editor = find_region(ed);
+    if (editor && editor->valid) {
+        pointer_jump(&editor->rect);
+    } else {
+        hid_out_log("script: no editor region, skipping the first pointer jump");
+    }
+    for (;;) {
+        if (keep_going && !keep_going()) {
+            return;
+        }
+        if (!rhythm_aborted()) {
+            uint32_t before = hid_out_now_ms();
+            call_top(main_def);
+            if (hid_out_now_ms() == before) {
+                hid_out_sleep_ms(1); /* never spin if MAIN has no delays */
+            }
+        }
+        if (rhythm_aborted()) {
+            while (hid_out_paused() && (!keep_going || keep_going())) {
+                hid_out_sleep_ms(50);
+            }
+            rhythm_clear_abort();
+            if (resume) {
+                call_top(resume);
+            }
+        }
+    }
+}
+
+int script_main_choices(script_choice_t *out, int max)
+{
+    const def_t *d = find_def_c("MAIN");
+    if (!d) {
+        return 0;
+    }
+    const char *p = d->body;
+    line_t l;
+    while (read_line(p, d->end, &l)) {
+        span_t args, c = command(&l, &args);
+        if (is(c, "CHOOSE")) {
+            const char *bend = find_end(l.next, d->end);
+            choice_t ch[MAX_CHOICES];
+            int n = read_choices(l.next, bend ? bend : d->end, ch, MAX_CHOICES);
+            n = n < max ? n : max;
+            for (int i = 0; i < n; i++) {
+                out[i].name = ch[i].name.p;
+                out[i].len = ch[i].name.n;
+                out[i].weight = (int)ch[i].weight;
+            }
+            return n;
+        }
+        p = l.next;
+    }
+    return 0;
 }
