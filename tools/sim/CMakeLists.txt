@@ -6,3 +6,4 @@ function(sim_test name)
 endfunction()
 
 sim_test(sim)
+sim_test(keys)
