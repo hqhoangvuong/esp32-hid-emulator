@@ -86,6 +86,7 @@ static void test_empty_region_logged(void)
 {
     load("SCREEN 800 600 200\nREGION editor +440 +115 -140 -90\nDEF MAIN\nEND\n");
     CHECK(sim_log_count("empty region editor") == 1);
+    CHECK(script_problems() == 1); /* so check_script fails after a SCREEN edit that empties a region */
 }
 
 /* Review Focus 3: POOL bodies are literal */

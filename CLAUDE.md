@@ -51,6 +51,8 @@ MSVC fails with `FTK1011` when a build path exceeds 260 characters, so keep `bui
 
 - The absolute mouse maps onto the primary monitor. `SCREEN` in `developer.txt` must match its resolution and effective UI scale; a wrong value silently misplaces every target. Uncomment `CALL calibrate` once to trace the regions on the real screen.
 - `TYPE` and snippets assume a US keyboard layout on the host, ASCII only.
+- `hid_out_usb.c` latches a pause when the host suspends or disappears, and only BOOT resumes it. Win+L sends nothing over USB, so the user must press BOOT before locking (see `docs/setup.md`).
+- `sdkconfig.defaults` sets `CONFIG_FREERTOS_HZ=1000` so 10 ms pointer steps and 20 ms sleep slices are not rounded to 10 ms ticks; an old `sdkconfig` keeps 100 until it is regenerated.
 - The scripts are embedded with `EMBED_TXTFILES`, so editing them requires a rebuild; the symbols `_binary_developer_txt_start` and `_binary_snippets_txt_start` come from the file names. Run `check_script` after every edit: the device only logs problems to the serial monitor.
 - POOL bodies are literal (`#` lines and blank lines are content) up to a line that is exactly `END`. New C# snippets must pass the grammar and compile (`compile_snippets.ps1`).
 - Never press Ctrl+S mid-snippet in a script: format-on-save moves the auto-closed braces the typer relies on.

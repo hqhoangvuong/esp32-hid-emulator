@@ -30,6 +30,8 @@ REGION editor      +440 +115 -140 -90
 REGION explorer    +70  +115 +280 +260
 REGION terminal    +440 -250 -60  -90
 REGION chrome_page +40  +130 -40  -70
+# Left band of the editor where the short lines of code actually are; word edits aim here.
+REGION code_text   +440 +115 +760 -90
 
 DEF MAIN
 # Uncomment once after changing SCREEN to check the regions against the real screen:
@@ -140,16 +142,16 @@ GOTO editor
 CLICK
 END
 
+# Try a different name for a word, look at it, then take it back. The double-click can miss
+# (past the end of a line), so the edit is always undone to keep the file intact.
 DEF edit_word
-GOTO editor
+GOTO code_text
 IDLE 400 1200
 DBLCLICK
 IDLE 500 1200
 TYPE @identifiers
 IDLE 800 2000
-MAYBE 30
 KEY CTRL+Z
-END
 END
 
 DEF edit_line
@@ -210,16 +212,16 @@ IDLE 1500 3500
 KEY CTRL+Z
 END
 
+# Start a rename and think better of it. Nothing is typed: if F2 found no symbol there is no
+# rename box, and the text would land in the code.
 DEF edit_rename
-GOTO editor
+GOTO code_text
 DBLCLICK
 IDLE 500 1200
 KEY F2
-IDLE 700 1500
-TYPE @identifiers
-IDLE 400 900
-KEY ENTER
-IDLE 1500 3000
+IDLE 1500 3500
+KEY ESC
+IDLE 800 2000
 END
 
 DEF edit_format

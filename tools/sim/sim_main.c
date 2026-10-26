@@ -76,6 +76,8 @@ int main(int argc, char **argv)
             continue;
         }
         rect_t r = pointer_resolve(&spec);
+        cfg.region_kind[cfg.nregions] =
+            i == 2 ? INV_REGION_TERMINAL : (i == 3 ? INV_REGION_CHROME : INV_REGION_CODE);
         cfg.regions[cfg.nregions++] = r;
         if (cfg.nregions == 1) {
             cfg.safe = r;

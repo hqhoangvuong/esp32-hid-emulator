@@ -714,7 +714,8 @@ static void apply_settings(void)
         regions[i].rect = pointer_resolve(&regions[i].spec);
         regions[i].valid = pointer_rect_valid(&regions[i].rect);
         if (!regions[i].valid) {
-            hid_out_log("script: empty region %.*s", (int)regions[i].name.n, regions[i].name.p);
+            problems++;
+            hid_out_log("script: empty region %.*s (check SCREEN)", (int)regions[i].name.n, regions[i].name.p);
             continue;
         }
         const rect_t *r = &regions[i].rect;
@@ -874,18 +875,15 @@ static int lines_in(const char *s, size_t n)
     return count;
 }
 
-static void handoff_to_pointer(void)
+/* Both return false if the pause came during the hand-off, so nothing more is sent. */
+static bool handoff_to_pointer(void)
 {
-    if (last_input == INPUT_KEY) {
-        rhythm_sleep(rhythm_rand(250, 900));
-    }
+    return last_input != INPUT_KEY || rhythm_sleep(rhythm_rand(250, 900));
 }
 
-static void handoff_to_keys(void)
+static bool handoff_to_keys(void)
 {
-    if (last_input == INPUT_CLICK) {
-        rhythm_sleep(rhythm_rand(200, 700));
-    }
+    return last_input != INPUT_CLICK || rhythm_sleep(rhythm_rand(200, 700));
 }
 
 static bool focus(script_app_t app)
@@ -893,7 +891,9 @@ static bool focus(script_app_t app)
     if (state.fg == app) {
         return true;
     }
-    handoff_to_keys();
+    if (!handoff_to_keys()) {
+        return false;
+    }
     bool tab = false;
     bool ok = typing_alt_tab(&tab);
     if (tab) {
@@ -905,7 +905,9 @@ static bool focus(script_app_t app)
 
 static bool key_flip(uint8_t mod, uint8_t code, bool *flag, bool value)
 {
-    handoff_to_keys();
+    if (!handoff_to_keys()) {
+        return false;
+    }
     bool pressed = false;
     bool ok = typing_key(mod, code, &pressed);
     if (pressed) {
@@ -932,7 +934,9 @@ static bool cmd_search(span_t args)
     if (!pl || !pool_pick(pl, &q, &n, &idx)) {
         return true;
     }
-    handoff_to_keys();
+    if (!handoff_to_keys()) {
+        return false;
+    }
     bool pressed = false;
     bool ok = typing_key(KMOD_CTRL, KEY_LETTER('t'), &pressed);
     if (pressed) {
@@ -974,7 +978,9 @@ static bool cmd_code(span_t args)
         return true;
     }
     trace(TRACE_SNIPPET, pl->name, call_depth, idx);
-    handoff_to_keys();
+    if (!handoff_to_keys()) {
+        return false;
+    }
     last_input = INPUT_KEY;
     state.lines += lines_in(s, n); /* counted up front: an over-estimate is safe */
     midway_ctx_t ctx = {mid.n ? find_def(mid) : NULL};
@@ -989,7 +995,9 @@ static bool cmd_pointer(span_t c, span_t args)
         hid_out_log("script: click suppressed while chrome is in front");
         return true;
     }
-    handoff_to_pointer();
+    if (!handoff_to_pointer()) {
+        return false;
+    }
     last_input = click ? INPUT_CLICK : INPUT_POINTER;
     if (is(c, "CLICK")) {
         uint8_t b = is(args, "RIGHT") ? BTN_RIGHT : (is(args, "MIDDLE") ? BTN_MIDDLE : BTN_LEFT);
@@ -1030,12 +1038,16 @@ static int exec_input(span_t c, span_t args)
         if (!keys_parse_combo(args.p, args.n, &m, &k)) {
             return 1;
         }
-        handoff_to_keys();
+        if (!handoff_to_keys()) {
+            return false;
+        }
         last_input = INPUT_KEY;
         return typing_key(m, k, NULL);
     }
     if (is(c, "TYPE")) {
-        handoff_to_keys();
+        if (!handoff_to_keys()) {
+            return false;
+        }
         last_input = INPUT_KEY;
         if (args.n && args.p[0] == '@') {
             span_t name = {args.p + 1, args.n - 1};

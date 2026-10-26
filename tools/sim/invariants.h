@@ -9,12 +9,16 @@
 /* Watches the simulator's event stream and the script trace, models what the host would do with
  * the keys (Alt+Tab, Ctrl+`, Ctrl+T, Ctrl+W), and counts violations of the spec's invariants. */
 
+/* Which app a region belongs to, for the click check. */
+enum { INV_REGION_CODE, INV_REGION_TERMINAL, INV_REGION_CHROME };
+
 typedef struct {
     uint16_t w, h;
     rect_t safe;
     rect_t regions[8];
     int nregions;
     uint32_t max_gap_ms, searchgap_ms;
+    int region_kind[8]; /* INV_REGION_*, zero (CODE) by default */
 } inv_config_t;
 
 void inv_init(const inv_config_t *cfg);

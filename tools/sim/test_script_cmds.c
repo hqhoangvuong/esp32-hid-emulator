@@ -288,8 +288,49 @@ static void test_idle_nudges(void)
     CHECK(hid_out_now_ms() > 300000 && hid_out_now_ms() - e[n - 1].t <= 210020);
 }
 
+/* A pause during the key-to-pointer hand-off must not let any pointer report through: only the
+ * release report may go out once the pause has started. */
+static void quiet_after_pause(const char *body)
+{
+    load(30, body);
+    script_call("t");
+    size_t n;
+    const sim_event_t *e = sim_events(&n);
+    uint32_t key_up = 0;
+    for (size_t i = 0; i < n && e[i].kind == 'K'; i++) {
+        key_up = e[i].t;
+    }
+    uint32_t p = key_up + 30;
+    load(30, body);
+    sim_pause(p, p + 5000);
+    script_call("t");
+    e = sim_events(&n);
+    int mouse_after = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (e[i].t >= p) {
+            CHECK(e[i].buttons == 0 && e[i].code == 0 && e[i].wheel == 0);
+            mouse_after += e[i].kind == 'M';
+        }
+    }
+    CHECK(mouse_after <= 1);
+    if (mouse_after > 1) {
+        printf("  %s", body);
+    }
+}
+
+static void test_pause_in_handoff(void)
+{
+    quiet_after_pause("DEF t\nKEY ESC\nDBLCLICK\nEND\n");
+    quiet_after_pause("DEF t\nKEY ESC\nDRAGSELECT editor\nEND\n");
+    quiet_after_pause("DEF t\nKEY ESC\nCLICK\nEND\n");
+    quiet_after_pause("DEF t\nKEY ESC\nGOTO editor\nEND\n");
+    quiet_after_pause("DEF t\nKEY ESC\nSCROLL 2\nEND\n");
+    quiet_after_pause("DEF t\nKEY ESC\nREADSCROLL 2\nEND\n");
+}
+
 int main(int argc, char **argv)
 {
+    RUN(test_pause_in_handoff);
     RUN(test_key_and_type);
     RUN(test_type_pool_no_repeat);
     RUN(test_focus_idempotent);

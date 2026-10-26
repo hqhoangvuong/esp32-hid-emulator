@@ -25,8 +25,9 @@ static uint32_t last_t, longest_gap;
 static uint8_t cur_mod, cur_code, cur_buttons;
 static uint32_t mod_t, code_t;
 
-/* host model */
-static bool chrome_front, terminal_open, searched;
+/* host model; omnibox: Chrome's address bar has focus (from Ctrl+T until Enter) */
+static bool chrome_front, terminal_open, searched, omnibox;
+static int32_t cur_x = -1, cur_y = -1;
 static int tabs;
 static uint32_t last_search;
 
@@ -73,7 +74,8 @@ void inv_init(const inv_config_t *c)
     have_report = false;
     last_t = longest_gap = 0;
     cur_mod = cur_code = cur_buttons = 0;
-    chrome_front = terminal_open = searched = false;
+    chrome_front = terminal_open = searched = omnibox = false;
+    cur_x = cur_y = -1;
     tabs = 0;
     npauses = 0;
     npicks = total_picks = 0;
@@ -144,6 +146,7 @@ static void on_key_down(uint32_t t, uint8_t mod, uint8_t code)
 {
     if ((mod & KMOD_ALT) && code == KEY_TAB) {
         chrome_front = !chrome_front;
+        omnibox = false;
     } else if (mod == KMOD_CTRL && code == KEY_GRAVE && !chrome_front) {
         terminal_open = !terminal_open;
     } else if (mod == KMOD_CTRL && code == KEY_T && chrome_front) {
@@ -153,8 +156,17 @@ static void on_key_down(uint32_t t, uint8_t mod, uint8_t code)
         searched = true;
         last_search = t;
         tabs++;
-    } else if (mod == KMOD_CTRL && code == KEY_W && chrome_front && tabs > 0) {
-        tabs--;
+        omnibox = true;
+    } else if (mod == KMOD_CTRL && code == KEY_W && chrome_front) {
+        if (tabs > 0) {
+            tabs--;
+        } else {
+            violation(t, "Ctrl+W with no search tab open (closes a documentation tab)");
+        }
+        omnibox = false;
+    } else if (code == KEY_ENTER && chrome_front && omnibox) {
+        omnibox = false;
+        return;
     } else if (mod == KMOD_CTRL && code == 0x16) {
         if (nsaves < MAX_SAVES) {
             saves[nsaves++] = t;
@@ -164,6 +176,9 @@ static void on_key_down(uint32_t t, uint8_t mod, uint8_t code)
         backspaces++;
     }
     char c = (mod & (KMOD_CTRL | KMOD_ALT | KMOD_GUI)) ? 0 : keys_to_ascii(mod, code);
+    if (c && c != '\n' && c != '\t' && chrome_front && !omnibox) {
+        violation(t, "typing into a Chrome page (only the address bar after Ctrl+T)");
+    }
     if (c && c != '\n' && c != '\t') {
         if (chars > 0) {
             uint32_t g = t - last_char_t;
@@ -226,6 +241,11 @@ void inv_event(const sim_event_t *e)
     if (!inside(&cfg.safe, x, y)) {
         violation(t, "pointer outside the safe box");
     }
+    if (in_pause(t) && (e->wheel || ((x != cur_x || y != cur_y) && cur_x >= 0))) {
+        violation(t, "pointer moved or scrolled during a pause");
+    }
+    cur_x = x;
+    cur_y = y;
     if (e->buttons && !cur_buttons) {
         if (in_pause(t)) {
             violation(t, "button pressed during a pause");
@@ -233,12 +253,15 @@ void inv_event(const sim_event_t *e)
         if (chrome_front) {
             violation(t, "click while Chrome is in front");
         }
+        /* VS Code is in front here: only its regions count, the terminal only while open */
         bool in_region = false;
         for (int i = 0; i < cfg.nregions; i++) {
-            in_region |= inside(&cfg.regions[i], x, y);
+            int kind = cfg.region_kind[i];
+            bool usable = kind == INV_REGION_CODE || (kind == INV_REGION_TERMINAL && terminal_open);
+            in_region |= usable && inside(&cfg.regions[i], x, y);
         }
-        if (!in_region) {
-            violation(t, "button pressed outside every region");
+        if (!chrome_front && !in_region) {
+            violation(t, "button pressed outside the regions of the app in front");
         }
     }
     cur_buttons = e->buttons;
@@ -342,6 +365,9 @@ static int cmp_u32(const void *a, const void *b)
 int inv_finish(FILE *report)
 {
     check_pause_release(UINT32_MAX);
+    if (!all_released()) {
+        violation(last_t, "keys or buttons still held at the end of the run");
+    }
     if (!report) {
         return violations;
     }

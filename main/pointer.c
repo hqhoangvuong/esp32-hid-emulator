@@ -89,9 +89,13 @@ static int32_t clampi(int32_t v, int32_t lo, int32_t hi)
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
-/* Report the position (clamped to the safe box) if anything changed, or always if force. */
+/* Report the position (clamped to the safe box) if anything changed, or always if force.
+ * Nothing goes out once a pause has aborted the script: rhythm already released everything. */
 static void report(int32_t x, int32_t y, uint8_t buttons, int8_t wheel, bool force)
 {
+    if (rhythm_aborted()) {
+        return;
+    }
     x = clampi(x, safe.x0, safe.x1);
     y = clampi(y, safe.y0, safe.y1);
     if (!force && sent_any && x == pos_x && y == pos_y && buttons == sent_buttons && wheel == 0) {

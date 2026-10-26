@@ -1,2 +1,4 @@
 CONFIG_IDF_TARGET="esp32s2"
 CONFIG_TINYUSB_HID_COUNT=1
+# 1 ms tick so 20 ms sleep slices and 10 ms pointer steps are not rounded to 10 ms ticks
+CONFIG_FREERTOS_HZ=1000

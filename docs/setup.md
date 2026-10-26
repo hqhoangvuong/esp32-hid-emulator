@@ -56,4 +56,8 @@ Start state: VS Code in front with `Scratch.cs` focused, the terminal panel clos
 
 Plug in the board. After USB enumerates, the device waits 10–15 s, moves the pointer once into the editor, then starts. Press **BOOT** to pause: every key and button is released at once. Before pressing BOOT again to resume, leave the same app in front that was in front when you paused. On resume the macro closes any search tab, returns to VS Code, closes the terminal and clicks into the editor.
 
+**Press BOOT before locking the PC (Win+L).** Locking sends nothing over USB, so the device would keep typing into the sign-in screen, and every Enter would count as a failed sign-in. If the PC goes to sleep or the cable is pulled, the device notices and pauses by itself; press BOOT to resume once you are back at the unlocked desktop.
+
+Turn off Windows' "screen saver" and "lock after sleep" for the same reason, or press BOOT before walking away.
+
 If Windows keeps treating the board as a relative mouse after flashing this firmware, uninstall the device in Device Manager and plug it in again.

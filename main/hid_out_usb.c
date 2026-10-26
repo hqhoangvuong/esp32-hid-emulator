@@ -87,6 +87,12 @@ uint32_t hid_out_rand32(void)
 
 bool hid_out_paused(void)
 {
+    /* A suspended or vanished host (PC asleep, cable out) pauses the script until BOOT is
+     * pressed: typing on wake would go into the sign-in screen, and tracked state would be wrong. */
+    if (!hid_out_usb_paused && (tud_suspended() || !tud_mounted())) {
+        hid_out_usb_paused = true;
+        hid_out_log("host suspended or gone: PAUSED, press BOOT to resume");
+    }
     return hid_out_usb_paused;
 }
 
