@@ -4,38 +4,54 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-ESP-IDF firmware that makes an **ESP32-S2** enumerate as a wired USB HID keyboard + mouse and replay scripted macros with human-like timing. The folder name says "esp32-c6", but the ESP32-C6 has no USB OTG/device peripheral (only fixed-function USB Serial/JTAG) and cannot do USB HID, so the project targets the ESP32-S2 (Waveshare ESP32-S2 board, no LCD). The S3 would work too; retarget with `idf.py set-target esp32s3` and update `sdkconfig.defaults`. The S2 is single-core with no FPU, so the float Bezier maths in `human_move` is software-emulated; that is fine at the 10 ms step.
+ESP-IDF firmware that makes an **ESP32-S2** enumerate as a wired USB HID keyboard + absolute mouse and simulate a C# developer working in VS Code (with Chrome lookups), following `main/macros/developer.txt`. The folder name says "esp32-c6", but the ESP32-C6 has no USB OTG/device peripheral (only fixed-function USB Serial/JTAG) and cannot do USB HID, so the project targets the ESP32-S2 (Waveshare ESP32-S2 board, no LCD). The S3 would work too; retarget with `idf.py set-target esp32s3` and update `sdkconfig.defaults`. The S2 has no FPU, so the float pointer maths is software-emulated; that is fine at the 10 ms step.
 
-## Build environment (Windows)
+Design: `docs/superpowers/specs/2026-10-25-developer-simulator-design.md`. Implementation plan and its spec refinements: `docs/superpowers/plans/2026-10-26-developer-simulator.md`. User setup (virtual desktop, Chrome, scratch workspace, calibration): `docs/setup.md`.
+
+## Build and test (Windows)
 
 ESP-IDF v6.1 is at `C:\esp\v6.1\esp-idf`, installed via EIM. `export.ps1` does **not** work because its Python env is missing. Activate with the EIM profile instead:
 
 ```powershell
 . C:\Espressif\tools\Microsoft.v6.1.PowerShell_profile.ps1
-idf.py set-target esp32s2   # once; sdkconfig.defaults also pins the target
 idf.py build
 idf.py -p COMx flash monitor
 ```
 
-There are no tests. A clean `idf.py build` is the verification available without hardware. `espressif/esp_tinyusb` (^2.0.1) is fetched into `managed_components/` on first configure, which needs network access.
+`espressif/esp_tinyusb` is fetched into `managed_components/` on first configure, which needs network access.
+
+All behaviour is tested on the PC. The portable modules are built against a simulator backend with MSVC (VS Build Tools 2026) through CMake. Run these in a shell **without** the ESP-IDF profile loaded:
+
+```powershell
+cmake -S tools -B build-sim                       # re-run after adding a test
+cmake --build build-sim --config Debug
+ctest --test-dir build-sim -C Debug --output-on-failure            # everything
+ctest --test-dir build-sim -C Debug --output-on-failure -R test_typing
+build-sim\sim\Debug\test_typing.exe test_snippet_typed_exactly    # one test function
+build-sim\sim\Debug\sim_main.exe --hours 8 --seed 2 --check-mix    # long run with stats
+build-sim\check_script\Debug\check_script.exe main\macros\developer.txt main\macros\snippets.txt
+```
+
+MSVC fails with `FTK1011` when a build path exceeds 260 characters, so keep `build-sim/` at the repo root and never build under `%TEMP%`. MSVC has no `strcasecmp`, `strsep` or VLAs; use `str_ieq` from `main/strutil.h`. `tools/check_script/compile_snippets.ps1` compiles every C# snippet with the .NET SDK.
 
 ## Architecture
 
-Three layers in `main/`. Dependencies run `main.c` → `macro.c` → `human.c`, and `main.c` also writes `human_enabled` directly:
+`main/` holds portable C modules that reach the outside world only through `main/hid_out.h` (key and mouse reports, clock, sleep, RNG, pause flag, log). Only `main.c` and `hid_out_usb.c` include TinyUSB, FreeRTOS or ESP headers; `tools/sim/hid_out_sim.c` implements the same interface with a virtual clock, seeded PRNG and event log, so the firmware logic runs unchanged in tests.
 
-- `main.c` owns USB setup: the composite HID descriptors (keyboard report ID 1, mouse report ID 2, defined as `HID_RID_*` in `human.h`), the TinyUSB callbacks, and the BOOT button (GPIO0). The button toggles `human_enabled`, a global kill switch. It starts `macro_task`, which waits for `tud_mounted()` and then calls `macro_run()` on the script embedded from `main/macros/default.txt`.
-- `macro.c` is a line-based interpreter (`TYPE`, `KEY`, `MOVE`, `CLICK`, `SCROLL`, `WAIT`, `IDLE`, `LOOP`). The syntax is documented at the top of `default.txt`. The script is embedded with `EMBED_TXTFILES`, so editing it requires a rebuild, and the symbol `_binary_default_txt_start` is derived from the file name.
-- `human.c` has the primitives that make input look human: jittered keystroke delays, QWERTY-neighbour typos that get backspaced, and mouse moves along a randomised cubic Bezier with min-jerk easing, sent as relative int8 deltas every 10 ms.
+- `rhythm.c`: the session personality (typing speed, error rate, mouse speed, pause factor), slow fatigue drift, and `rhythm_sleep`, the only delay. It sleeps in 20 ms slices; on pause it releases everything, sets a sticky abort flag and returns false. It also runs the idle-gap hook (a pointer nudge) whenever no report has gone out for 90 s..MAXGAP.
+- `keys.c`: HID usage IDs, the US-layout ASCII map, `KEY` combo parsing, QWERTY neighbours and the finger map used for timing.
+- `pointer.c`: screen/region maths (regions are px offsets at 100% scale from an edge, multiplied by the UI scale), the absolute position (the firmware always knows where the cursor is), Fitts-timed Bezier moves with tremor and overshoot, clicks, drags, scrolls and hover. Every report is clamped to the safe box (bounding box of all regions).
+- `typing.c`: key timing, bursts, self-corrected mistakes, Alt+Tab, and the **snippet grammar**: VS Code auto-closes brackets, so closer lines (`}`, `};`) are reached with Down+End rather than typed, and the line before a closer gets no Enter. `typing_check_snippet` enforces the rules.
+- `script.c`: loads `developer.txt` (settings, REGIONs, DEFs) and `snippets.txt` (POOLs) in place, validates them, and interprets them. It tracks host state it cannot see (app in front, terminal panel, search tab, typed-line estimate). That state flips when the decisive key goes down, so a pause mid-combo cannot desynchronise it. CHOOSE compensates its weights for the no-repeat rule. `script_run` does the boot wait, the one teleport into the editor, MAIN forever, and RESUME after each pause.
+- `main.c`: USB descriptors (keyboard report ID 1, 6-byte absolute mouse report ID 2), the BOOT button (GPIO0) that toggles `hid_out_usb_paused`, and `macro_task`.
 
-Every primitive checks `human_enabled` and uses `human_delay_ms` (sliced, interruptible), so pausing takes effect mid-line. The exception is key and button hold times, which use plain `vTaskDelay` so that every press is always released. A pause abandons the rest of the current line, and resuming continues at the next script line. Reports go out through `human_wait_ready()`, which waits on `tud_mounted() && tud_hid_ready()`, gives up after 500 ticks, and then drops the report without any error.
-
-## Planned redesign
-
-`docs/superpowers/specs/2026-10-25-developer-simulator-design.md` is a design that is not implemented yet (status: awaiting user review). It replaces the relative mouse with an absolute pointer and the linear script with a behaviour engine (`DEF`/`CHOOSE`/`REGION`/...). It splits `human.c` into modules behind a `hid_out.h` abstraction so that a host-side simulator in `tools/sim` can run them, and it removes `MOVE` and `default.txt`. Read it before changing the HID descriptor, the mouse model or the script language. Once it is implemented, the Architecture section above is out of date.
+`tools/sim/` also has `editor_model.c` (emulates VS Code auto-close so tests can check the typed text), `invariants.c` (models the host from the raw key stream and checks gaps, safe box, held keys, no click in Chrome, search spacing, activity-boundary state, pause release), `sim_main.c` (24 h runs) and `display_matrix.c`.
 
 ## Gotchas
 
-- The mouse is a relative-motion device. `MOVE` takes offsets, never absolute coordinates, and the firmware cannot know where the cursor is.
-- `TYPE` maps characters through TinyUSB's `HID_ASCII_TO_KEYCODE`, so the host must use a US keyboard layout. It types ASCII only, cannot type a newline (use `KEY ENTER`), and loses leading and trailing whitespace because the parser trims it. Script lines longer than 255 characters are truncated.
-- Unknown commands and key names produce only an `ESP_LOGW` and are skipped, so check the serial monitor after editing a script. To add a key name for `KEY`, add it to the `named_keys` table in `macro.c`.
-- Adding a second HID interface needs a bump to `CONFIG_TINYUSB_HID_COUNT` in `sdkconfig.defaults`, plus matching changes to `TUSB_DESC_TOTAL_LEN` and the descriptor in `main.c`. An existing `sdkconfig` overrides new defaults, so delete it or run `idf.py fullclean` after changing them.
+- The absolute mouse maps onto the primary monitor. `SCREEN` in `developer.txt` must match its resolution and effective UI scale; a wrong value silently misplaces every target. Uncomment `CALL calibrate` once to trace the regions on the real screen.
+- `TYPE` and snippets assume a US keyboard layout on the host, ASCII only.
+- The scripts are embedded with `EMBED_TXTFILES`, so editing them requires a rebuild; the symbols `_binary_developer_txt_start` and `_binary_snippets_txt_start` come from the file names. Run `check_script` after every edit: the device only logs problems to the serial monitor.
+- POOL bodies are literal (`#` lines and blank lines are content) up to a line that is exactly `END`. New C# snippets must pass the grammar and compile (`compile_snippets.ps1`).
+- Never press Ctrl+S mid-snippet in a script: format-on-save moves the auto-closed braces the typer relies on.
+- Adding a second HID interface needs a bump to `CONFIG_TINYUSB_HID_COUNT` in `sdkconfig.defaults`, plus matching changes to `TUSB_DESC_TOTAL_LEN` and the descriptor in `main.c`. An existing `sdkconfig` overrides new defaults, so delete it or run `idf.py fullclean` after changing them. After a descriptor change, Windows may need the device uninstalled in Device Manager and replugged.
