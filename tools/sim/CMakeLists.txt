@@ -7,3 +7,4 @@ endfunction()
 
 sim_test(sim)
 sim_test(keys)
+sim_test(rhythm)

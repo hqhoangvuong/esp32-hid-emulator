@@ -17,6 +17,7 @@ endif()
 add_library(core STATIC
     sim/hid_out_sim.c
     ${FW}/keys.c
+    ${FW}/rhythm.c
 )
 target_include_directories(core PUBLIC ${FW} sim)
 if(NOT MSVC)
