@@ -1,0 +1,113 @@
+# Simulates a developer working in VS Code. Syntax:
+#   TYPE <text>         type text with human-like timing (occasional typos get corrected)
+#   KEY <combo>         e.g. ENTER, TAB, CTRL+S, ALT+TAB, F5, CTRL+GRAVE (the ` key)
+#   MOVE <dx> <dy>      move the mouse by a relative offset along a curved path
+#   CLICK [LEFT|RIGHT|MIDDLE]
+#   SCROLL <n>          positive = up, negative = down
+#   WAIT <ms>           fixed delay
+#   IDLE <min> <max>    random delay in ms
+#   LOOP                jump back to the first line (repeat forever)
+#
+# Before starting: focus the VS Code window with the editor active. All typing goes into
+# an untitled scratch tab (plain text, so no auto-indent or auto-closing brackets), which is
+# cleared at the end of every loop. Code lines have no leading spaces for the same reason.
+# Mouse moves are paired so the cursor ends where it started.
+
+IDLE 2000 4000
+
+# --- open a scratch file and sketch some code ---
+KEY CTRL+N
+IDLE 800 1500
+TYPE // todo: add retry with backoff to the http client
+KEY ENTER
+IDLE 1500 3000
+TYPE async function fetchUser(id) {
+KEY ENTER
+IDLE 600 1500
+TYPE const res = await fetch(`/api/users/${id}`);
+KEY ENTER
+IDLE 1200 2500
+TYPE if (!res.ok) throw new Error(`request failed: ${res.status}`);
+KEY ENTER
+TYPE return res.json();
+KEY ENTER
+TYPE }
+KEY ENTER
+KEY ENTER
+IDLE 4000 9000
+
+# --- read it back: move around the file, glance at the screen ---
+KEY CTRL+HOME
+IDLE 800 1600
+KEY DOWN
+KEY DOWN
+KEY DOWN
+IDLE 1500 3500
+KEY END
+IDLE 1000 2500
+MOVE 180 60
+IDLE 800 2000
+MOVE -180 -60
+IDLE 3000 7000
+
+# --- keep writing ---
+KEY CTRL+END
+TYPE // handle the empty list case before mapping
+KEY ENTER
+TYPE const names = users.map((u) => u.name).filter(Boolean);
+KEY ENTER
+IDLE 2000 5000
+TYPE console.log(names.length);
+KEY ENTER
+IDLE 5000 10000
+
+# --- search the file ---
+KEY CTRL+F
+IDLE 500 1200
+TYPE fetch
+IDLE 700 1500
+KEY ENTER
+IDLE 600 1400
+KEY ENTER
+IDLE 800 2000
+KEY ESC
+IDLE 2000 5000
+
+# --- check the sidebar ---
+KEY CTRL+B
+IDLE 2500 5000
+KEY CTRL+B
+IDLE 1500 3500
+
+# --- run a couple of terminal commands ---
+KEY CTRL+GRAVE
+IDLE 1500 2800
+TYPE git status
+KEY ENTER
+IDLE 4000 8000
+TYPE git log --oneline -5
+KEY ENTER
+IDLE 5000 10000
+TYPE clear
+KEY ENTER
+IDLE 800 1500
+KEY CTRL+GRAVE
+IDLE 600 1200
+KEY CTRL+1
+IDLE 3000 8000
+
+# --- scroll and think ---
+SCROLL -2
+IDLE 1500 3500
+SCROLL 2
+MOVE -120 90
+IDLE 2000 5000
+MOVE 120 -90
+IDLE 8000 20000
+
+# --- reset the scratch file for the next round ---
+KEY CTRL+A
+IDLE 400 900
+KEY DELETE
+IDLE 4000 9000
+LOOP
