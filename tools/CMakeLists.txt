@@ -19,6 +19,7 @@ add_library(core STATIC
     ${FW}/keys.c
     ${FW}/rhythm.c
     ${FW}/pointer.c
+    sim/editor_model.c
 )
 target_include_directories(core PUBLIC ${FW} sim)
 if(NOT MSVC)
