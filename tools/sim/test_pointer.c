@@ -137,8 +137,167 @@ static void test_goto_abort(void)
     CHECK(!pointer_goto(&EDITOR));
 }
 
+static void test_click(void)
+{
+    setup(10);
+    pointer_jump(&EDITOR);
+    size_t n0;
+    sim_events(&n0);
+    uint32_t t0 = hid_out_now_ms();
+    CHECK(pointer_click(BTN_LEFT));
+    size_t n;
+    const sim_event_t *e = sim_events(&n);
+    CHECK(n - n0 == 2 && e[n0].buttons == 1 && e[n0 + 1].buttons == 0 && e[n0].x == e[n0 + 1].x);
+    CHECK(e[n0].t - t0 >= 80);
+    uint32_t hold = e[n0 + 1].t - e[n0].t;
+    CHECK(hold >= 55 && hold <= 140);
+}
+
+static void test_dblclick(void)
+{
+    setup(11);
+    pointer_jump(&EDITOR);
+    size_t n0;
+    sim_events(&n0);
+    CHECK(pointer_dblclick());
+    size_t n;
+    const sim_event_t *e = sim_events(&n);
+    CHECK(n - n0 == 4);
+    uint32_t gap = e[n0 + 2].t - e[n0 + 1].t;
+    CHECK(gap >= 70 && gap <= 130);
+    CHECK(e[n0 + 3].t - e[n0].t < 500);
+}
+
+static void test_dragselect(void)
+{
+    setup(12);
+    pointer_jump(&EDITOR);
+    size_t n0;
+    sim_events(&n0);
+    CHECK(pointer_dragselect(&EDITOR));
+    size_t n;
+    const sim_event_t *e = sim_events(&n);
+    CHECK(e[n0].buttons == 1 && e[n - 1].buttons == 0);
+    for (size_t i = n0; i < n - 1; i++) {
+        CHECK(e[i].buttons == 1);
+    }
+    int32_t x, y;
+    pointer_pos(&x, &y);
+    CHECK(in(&EDITOR, x, y));
+}
+
+static int wheel_sum(size_t from, bool *reversed, int sign)
+{
+    size_t n;
+    const sim_event_t *e = sim_events(&n);
+    int s = 0;
+    for (size_t i = from; i < n; i++) {
+        if (e[i].wheel) {
+            CHECK(e[i].wheel == 1 || e[i].wheel == -1);
+            if (e[i].wheel != sign) {
+                *reversed = true;
+            }
+        }
+        s += e[i].wheel;
+    }
+    return s;
+}
+
+static void test_scroll(void)
+{
+    setup(13);
+    pointer_jump(&EDITOR);
+    int rev = 0;
+    for (int i = 0; i < 200; i++) {
+        size_t n0;
+        sim_events(&n0);
+        bool r = false;
+        int k = (i & 1) ? 5 : -3;
+        CHECK(pointer_scroll(k));
+        CHECK(wheel_sum(n0, &r, k > 0 ? 1 : -1) == k);
+        rev += r;
+    }
+    CHECK(rev >= 10 && rev <= 80);
+}
+
+static void test_readscroll(void)
+{
+    setup(14);
+    pointer_jump(&EDITOR);
+    size_t n0;
+    sim_events(&n0);
+    bool r = false;
+    CHECK(pointer_readscroll(6, &EDITOR));
+    CHECK(wheel_sum(n0, &r, -1) == -6);
+    size_t n;
+    const sim_event_t *e = sim_events(&n);
+    for (size_t i = n0; i < n; i++) {
+        CHECK(in(&SAFE, px_x(&e[i]), px_y(&e[i])));
+    }
+}
+
+static void test_hover(void)
+{
+    setup(15);
+    pointer_jump(&EXPLORER);
+    CHECK(pointer_hover(&EDITOR, 2000));
+    int32_t x, y;
+    pointer_pos(&x, &y);
+    CHECK(in(&EDITOR, x, y));
+}
+
+static void test_nudge_kinds(void)
+{
+    setup(16);
+    pointer_jump(&EDITOR);
+    int drift = 0, wheel = 0, hover = 0;
+    for (int i = 0; i < 100; i++) {
+        size_t n0;
+        sim_events(&n0);
+        uint32_t t0 = hid_out_now_ms();
+        CHECK(pointer_nudge(&EDITOR));
+        size_t n;
+        const sim_event_t *e = sim_events(&n);
+        int32_t x, y;
+        pointer_pos(&x, &y);
+        bool w = false;
+        for (size_t k = n0; k < n; k++) {
+            w |= e[k].wheel != 0;
+        }
+        if (w) {
+            wheel++;
+        } else if (hid_out_now_ms() - t0 >= 800) {
+            hover++;
+        } else {
+            drift++;
+        }
+        CHECK(in(&EDITOR, x, y));
+        CHECK(n > n0);
+    }
+    CHECK(drift > 0 && wheel > 0 && hover > 0);
+}
+
+static void test_outline(void)
+{
+    setup(17);
+    rect_t r = {500, 300, 900, 600};
+    pointer_jump(&r);
+    CHECK(pointer_outline(&r));
+    int32_t x, y;
+    pointer_pos(&x, &y);
+    CHECK(x == 500 && y == 300);
+}
+
 int main(int argc, char **argv)
 {
+    RUN(test_click);
+    RUN(test_dblclick);
+    RUN(test_dragselect);
+    RUN(test_scroll);
+    RUN(test_readscroll);
+    RUN(test_hover);
+    RUN(test_nudge_kinds);
+    RUN(test_outline);
     RUN(test_units_roundtrip);
     RUN(test_resolve);
     RUN(test_empty_region);

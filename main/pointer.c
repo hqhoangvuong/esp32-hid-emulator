@@ -197,3 +197,218 @@ bool pointer_goto(const rect_t *r)
     }
     return move_to(tx, ty, move_duration(distance(tx, ty)), 0, true);
 }
+
+static bool inside(const rect_t *r, int32_t x, int32_t y)
+{
+    return x >= r->x0 && x <= r->x1 && y >= r->y0 && y <= r->y1;
+}
+
+static bool press_release(uint8_t buttons, uint32_t hold_lo, uint32_t hold_hi)
+{
+    report(pos_x, pos_y, buttons, 0, true);
+    if (!rhythm_sleep(rhythm_rand(hold_lo, hold_hi))) {
+        return false;
+    }
+    report(pos_x, pos_y, 0, 0, true);
+    return true;
+}
+
+bool pointer_click(uint8_t buttons)
+{
+    return rhythm_sleep(rhythm_rand(80, 220)) && press_release(buttons, 55, 140);
+}
+
+bool pointer_dblclick(void)
+{
+    return press_release(BTN_LEFT, 50, 90) && rhythm_sleep(rhythm_rand(70, 130)) && press_release(BTN_LEFT, 50, 90);
+}
+
+bool pointer_dragselect(const rect_t *r)
+{
+    if (!pointer_rect_valid(r)) {
+        hid_out_log("pointer: empty region");
+        return true;
+    }
+    int32_t tx, ty;
+    random_point(r, &tx, &ty);
+    report(pos_x, pos_y, BTN_LEFT, 0, true);
+    if (!rhythm_sleep(rhythm_rand(60, 150))) {
+        return false;
+    }
+    if (!move_to(tx, ty, move_duration(distance(tx, ty)) * 13 / 10, BTN_LEFT, false)) {
+        return false;
+    }
+    if (!rhythm_sleep(rhythm_rand(60, 150))) {
+        return false;
+    }
+    report(pos_x, pos_y, 0, 0, true);
+    return true;
+}
+
+/* A 1-2 px step that stays inside r (and the safe box) and actually moves. */
+static void wobble(const rect_t *r)
+{
+    for (int attempt = 0; attempt < 8; attempt++) {
+        int32_t dx = (int32_t)rhythm_rand(0, 4) - 2, dy = (int32_t)rhythm_rand(0, 4) - 2;
+        int32_t x = pos_x + dx, y = pos_y + dy;
+        if ((dx || dy) && inside(r, x, y) && inside(&safe, x, y)) {
+            report(x, y, 0, 0, false);
+            return;
+        }
+    }
+}
+
+/* Stay put for ms, wobbling every 250-600 ms. */
+static bool dwell(const rect_t *r, uint32_t ms)
+{
+    uint32_t start = hid_out_now_ms();
+    for (;;) {
+        uint32_t elapsed = hid_out_now_ms() - start;
+        if (elapsed >= ms) {
+            return true;
+        }
+        uint32_t w = rhythm_rand(250, 600);
+        if (w > ms - elapsed) {
+            w = ms - elapsed;
+        }
+        if (!rhythm_sleep(w)) {
+            return false;
+        }
+        if (hid_out_now_ms() - start < ms) {
+            wobble(r);
+        }
+    }
+}
+
+bool pointer_hover(const rect_t *r, uint32_t dwell_ms)
+{
+    if (!pointer_rect_valid(r)) {
+        hid_out_log("pointer: empty region");
+        return true;
+    }
+    return pointer_goto(r) && dwell(r, dwell_ms);
+}
+
+/* One burst of count notches in dir, intervals growing 1.3x; 10% add a reversal and a
+ * compensating notch so the net stays count * dir. */
+static bool scroll_burst(int dir, int count)
+{
+    uint32_t interval = rhythm_rand(30, 60);
+    bool reverse = rhythm_rand(0, 99) < 10;
+    for (int i = 0; i < count + (reverse ? 2 : 0); i++) {
+        int8_t w = (int8_t)((reverse && i == count) ? -dir : dir);
+        report(pos_x, pos_y, 0, w, true);
+        if (!rhythm_sleep(interval)) {
+            return false;
+        }
+        interval = interval * 13 / 10;
+    }
+    return true;
+}
+
+bool pointer_scroll(int notches)
+{
+    int dir = notches >= 0 ? 1 : -1;
+    int remaining = notches >= 0 ? notches : -notches;
+    while (remaining > 0) {
+        int burst = (int)rhythm_rand(1, 4);
+        if (burst > remaining) {
+            burst = remaining;
+        }
+        if (!scroll_burst(dir, burst)) {
+            return false;
+        }
+        remaining -= burst;
+        if (remaining > 0 && !rhythm_sleep(rhythm_rand(200, 700))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool pointer_readscroll(int notches, const rect_t *within)
+{
+    if (!pointer_rect_valid(within)) {
+        hid_out_log("pointer: empty region");
+        return true;
+    }
+    if (!inside(within, pos_x, pos_y) && !pointer_goto(within)) {
+        return false;
+    }
+    int remaining = notches;
+    while (remaining > 0) {
+        int burst = (int)rhythm_rand(1, 4);
+        if (burst > remaining) {
+            burst = remaining;
+        }
+        if (!scroll_burst(-1, burst)) {
+            return false;
+        }
+        remaining -= burst;
+        if (remaining <= 0) {
+            break;
+        }
+        /* follow the text down a few lines, or go back to the top third */
+        int32_t dy = (int32_t)rhythm_rand(1, 3) * scaled(19);
+        bool ok;
+        if (pos_y + dy > within->y1) {
+            rect_t top = *within;
+            top.y1 = within->y0 + (within->y1 - within->y0) / 3;
+            ok = pointer_goto(&top);
+        } else {
+            ok = move_to(pos_x, pos_y + dy, move_duration((float)dy), 0, false);
+        }
+        if (!ok || !rhythm_sleep(rhythm_rand(200, 700))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool pointer_nudge(const rect_t *within)
+{
+    if (!pointer_rect_valid(within)) {
+        hid_out_log("pointer: empty region");
+        return true;
+    }
+    if (!inside(within, pos_x, pos_y)) {
+        return pointer_goto(within);
+    }
+    switch (rhythm_rand(0, 2)) {
+    case 0: /* drift 6-20 px, flipping direction to stay inside */
+        for (int attempt = 0; attempt < 8; attempt++) {
+            int32_t d = (int32_t)rhythm_rand(6, 20);
+            int32_t dx = (int32_t)rhythm_rand(0, (uint32_t)d), dy = d - dx;
+            dx = (attempt & 1) ? -dx : dx;
+            dy = (attempt & 2) ? -dy : dy;
+            if (rhythm_rand(0, 1)) {
+                dx = -dx;
+                dy = -dy;
+            }
+            int32_t x = pos_x + dx, y = pos_y + dy;
+            if (inside(within, x, y) && inside(&safe, x, y)) {
+                return move_to(x, y, move_duration(distance(x, y)), 0, false);
+            }
+        }
+        return rhythm_sleep(1) && scroll_burst(-1, 1);
+    case 1:
+        return dwell(within, rhythm_rand(800, 2000));
+    default:
+        report(pos_x, pos_y, 0, (int8_t)(rhythm_rand(0, 1) ? 1 : -1), true);
+        return true;
+    }
+}
+
+bool pointer_outline(const rect_t *r)
+{
+    const int32_t corners[5][2] = {
+        {r->x0, r->y0}, {r->x1, r->y0}, {r->x1, r->y1}, {r->x0, r->y1}, {r->x0, r->y0},
+    };
+    for (int i = 0; i < 5; i++) {
+        int32_t x = corners[i][0], y = corners[i][1];
+        if (!move_to(x, y, move_duration(distance(x, y)) * 2, 0, false) || !rhythm_sleep(1000)) {
+            return false;
+        }
+    }
+    return true;
+}

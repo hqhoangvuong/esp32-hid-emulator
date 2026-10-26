@@ -37,3 +37,20 @@ void pointer_pos(int32_t *x, int32_t *y);
 void pointer_jump(const rect_t *r);
 /* Human-like move to a random point in r. Returns false if aborted. */
 bool pointer_goto(const rect_t *r);
+
+/* The actions below all return false if aborted. */
+/* At the current position: settle 80-220 ms, press, hold 55-140 ms, release. */
+bool pointer_click(uint8_t buttons);
+bool pointer_dblclick(void);
+/* Press here, move to a random point in r with the left button held, release. */
+bool pointer_dragselect(const rect_t *r);
+/* Move into r, then dwell with a 1-2 px wobble every 250-600 ms. */
+bool pointer_hover(const rect_t *r, uint32_t dwell_ms);
+/* Bursts of notches with slowing intervals, occasionally reversing; positive = up. */
+bool pointer_scroll(int notches);
+/* Scroll down by notches while the pointer follows the text inside within. */
+bool pointer_readscroll(int notches, const rect_t *within);
+/* Sign of life inside within: a 6-20 px drift, a short hover, or one notch. */
+bool pointer_nudge(const rect_t *within);
+/* Trace r's corners slowly, for calibration. */
+bool pointer_outline(const rect_t *r);
