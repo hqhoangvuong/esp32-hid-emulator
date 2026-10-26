@@ -316,3 +316,202 @@ bool typing_text(const char *s, size_t len, unsigned flags)
     }
     return true;
 }
+
+/* ---- snippet grammar ---- */
+
+static char opener_of(char c)
+{
+    return c == ')' ? '(' : (c == ']' ? '[' : (c == '}' ? '{' : 0));
+}
+
+static bool brackets_balanced(const char *s, size_t n)
+{
+    char stack[64];
+    int sp = 0;
+    for (size_t i = 0; i < n; i++) {
+        char c = s[i];
+        if (c == '(' || c == '[' || c == '{') {
+            if (sp == (int)sizeof(stack)) {
+                return false;
+            }
+            stack[sp++] = c;
+        } else if (opener_of(c)) {
+            if (sp == 0 || stack[--sp] != opener_of(c)) {
+                return false;
+            }
+        }
+    }
+    return sp == 0;
+}
+
+/* Unescaped double quotes pair up, and single quotes pair up outside strings. */
+static bool quotes_balanced(const char *s, size_t n)
+{
+    bool in_str = false;
+    int singles = 0;
+    for (size_t i = 0; i < n; i++) {
+        bool escaped = i > 0 && s[i - 1] == '\\';
+        if (s[i] == '"' && !escaped) {
+            in_str = !in_str;
+        } else if (s[i] == '\'' && !in_str && !escaped) {
+            singles++;
+        }
+    }
+    return !in_str && singles % 2 == 0;
+}
+
+static bool is_closer(const char *s, size_t n)
+{
+    return (n == 1 && s[0] == '}') || (n == 2 && s[0] == '}' && s[1] == ';');
+}
+
+bool typing_check_line(const char *line, size_t len, const char **why)
+{
+    if (len == 0) {
+        return true;
+    }
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)line[i];
+        if (c < 0x20 || c > 0x7E) {
+            *why = "not printable ASCII";
+            return false;
+        }
+    }
+    if (line[0] == ' ' || line[len - 1] == ' ') {
+        *why = "leading or trailing space";
+        return false;
+    }
+    for (size_t i = 0; i + 2 < len; i++) {
+        if (line[i] == '/' && line[i + 1] == '/' && line[i + 2] == '/') {
+            *why = "/// starts a doc-comment template";
+            return false;
+        }
+    }
+    if (is_closer(line, len)) {
+        return true;
+    }
+    bool comment = len >= 2 && line[0] == '/' && line[1] == '/';
+    if (!comment && !quotes_balanced(line, len)) {
+        *why = "unbalanced quotes";
+        return false;
+    }
+    size_t body = line[len - 1] == '{' ? len - 1 : len;
+    if (!brackets_balanced(line, body)) {
+        *why = "unbalanced brackets";
+        return false;
+    }
+    return true;
+}
+
+/* Iterate the lines of s, '\r' stripped. Returns false at the end. */
+static bool next_line(const char *s, size_t len, size_t *pos, const char **line, size_t *n)
+{
+    if (*pos > len) {
+        return false;
+    }
+    size_t start = *pos, end = start;
+    while (end < len && s[end] != '\n') {
+        end++;
+    }
+    *pos = end + 1;
+    *line = s + start;
+    *n = end - start;
+    if (*n > 0 && (*line)[*n - 1] == '\r') {
+        (*n)--;
+    }
+    return true;
+}
+
+bool typing_check_snippet(const char *s, size_t len, int *bad_line, const char **why)
+{
+    size_t pos = 0, n, prev_n = 0;
+    const char *line, *prev = NULL;
+    int depth = 0, num = 0;
+    while (next_line(s, len, &pos, &line, &n)) {
+        num++;
+        *bad_line = num;
+        if (!typing_check_line(line, n, why)) {
+            return false;
+        }
+        if (num == 1 && n == 0) {
+            *why = "blank first line";
+            return false;
+        }
+        if (prev && is_closer(line, n)) {
+            if (prev_n == 0) {
+                *why = "blank line before a closer";
+                return false;
+            }
+            if (prev[prev_n - 1] == '{') {
+                *why = "empty block: write { } on one line";
+                return false;
+            }
+        }
+        for (size_t i = 0; i < n; i++) {
+            depth += line[i] == '{' ? 1 : (line[i] == '}' ? -1 : 0);
+            if (depth < 0) {
+                *why = "brace closed before it was opened";
+                return false;
+            }
+        }
+        prev = line;
+        prev_n = n;
+    }
+    if (prev_n == 0) {
+        *why = "blank last line";
+        return false;
+    }
+    if (depth != 0) {
+        *bad_line = num;
+        *why = "unclosed brace";
+        return false;
+    }
+    return true;
+}
+
+bool typing_snippet(const char *s, size_t len, void (*midway)(void *ctx), void *ctx)
+{
+    typer_t t = {0};
+    t.flags = TYPE_ARROW_FIX;
+    int nlines = 0;
+    size_t pos = 0, n;
+    const char *line;
+    while (next_line(s, len, &pos, &line, &n)) {
+        nlines++;
+    }
+    int midway_after = nlines / 2 > 0 ? nlines / 2 : 1;
+
+    pos = 0;
+    int num = 0;
+    while (next_line(s, len, &pos, &line, &n)) {
+        num++;
+        size_t npos = pos, nn = 0;
+        const char *nline = NULL;
+        bool next_closer = next_line(s, len, &npos, &nline, &nn) && is_closer(nline, nn);
+        bool last = num == nlines;
+
+        if (is_closer(line, n)) {
+            if (!tap(KEY_DOWN) || !tap(KEY_END) || (n == 2 && !type_one(&t, ';'))) {
+                return false;
+            }
+        } else if (n > 0) {
+            t.llen = 0;
+            for (size_t i = 0; i < n && t.llen < LINE_MAX_CHARS; i++) {
+                t.line[t.llen++] = line[i];
+            }
+            if (!type_line(&t)) {
+                return false;
+            }
+        }
+        if ((last || !next_closer) && !type_one(&t, '\n')) {
+            return false;
+        }
+        if (midway && num == midway_after) {
+            midway(ctx);
+            if (rhythm_aborted()) {
+                return false;
+            }
+        }
+    }
+    return true;
+}

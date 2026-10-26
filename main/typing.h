@@ -19,3 +19,14 @@ bool typing_alt_tab(bool *tab_pressed);
 /* Type text with human timing and self-corrected mistakes; '\n' is typed as Enter and no Enter
  * is added at the end. Returns false if aborted. */
 bool typing_text(const char *s, size_t len, unsigned flags);
+
+/* Snippet grammar, so that VS Code's auto-closed brackets end up exactly where the snippet
+ * says. A line is printable ASCII with no leading/trailing space and no "///", and is either
+ * exactly "}" or "};", or balanced, or balanced up to a final "{". */
+bool typing_check_line(const char *line, size_t len, const char **why);
+/* Every line passes typing_check_line; no blank first/last line; no blank line or "{" line
+ * directly before a closer line; brace depth never negative and ends at 0. bad_line is 1-based. */
+bool typing_check_snippet(const char *s, size_t len, int *bad_line, const char **why);
+/* Type a snippet: closer lines are reached with Down+End instead of being typed, and the line
+ * before a closer gets no Enter. midway (may be NULL) is called once halfway through. */
+bool typing_snippet(const char *s, size_t len, void (*midway)(void *ctx), void *ctx);

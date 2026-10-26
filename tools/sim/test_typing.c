@@ -163,8 +163,94 @@ static void test_alt_tab(void)
     CHECK(n == 4 && e[1].mod == KMOD_ALT && e[1].code == KEY_TAB && e[3].mod == 0);
 }
 
+static bool line_ok(const char *s)
+{
+    const char *why;
+    return typing_check_line(s, strlen(s), &why);
+}
+
+static void test_check_line(void)
+{
+    const char *ok[] = {"int x = 1;", "if (a) {", "}", "};", "// don't panic",
+                        "var s = $\"a{b}\";", "var l = new List<int> { 1, 2 };", "#region Data"};
+    const char *bad[] = {" int x;", "int x; ", "/// doc", "} else {", "foo(", "\tx = 1;", "x = \"abc;", "caf\xc3\xa9"};
+    for (int i = 0; i < 8; i++) {
+        CHECK(line_ok(ok[i]));
+        CHECK(!line_ok(bad[i]));
+    }
+}
+
+static bool snip_ok(const char *s)
+{
+    int l;
+    const char *w;
+    return typing_check_snippet(s, strlen(s), &l, &w);
+}
+
+static void test_check_snippet(void)
+{
+    CHECK(snip_ok("public class A {\npublic int X { get; set; }\n}"));
+    CHECK(!snip_ok("void F() {\n}"));
+    CHECK(!snip_ok("class A {\nint x;\n\n}"));
+    CHECK(!snip_ok("}\nclass A {"));
+    CHECK(!snip_ok("class A {\nint x;"));
+    CHECK(!snip_ok("\nclass A { }"));
+    int l;
+    const char *w;
+    CHECK(!typing_check_snippet("class A {\nint x; \n}", 19, &l, &w) && l == 2);
+}
+
+static const char *NESTED =
+    "public class Cache {\n// keep it small\nprivate readonly Dictionary<string, int> _items = new();\n"
+    "public int Get(string key) {\nif (_items.TryGetValue(key, out var v)) {\nreturn v;\n}\nreturn -1;\n}\n}";
+
+static void test_snippet_typed_exactly(void)
+{
+    char expect[512];
+    snprintf(expect, sizeof expect, "%s\n", NESTED);
+    for (uint64_t s = 1; s <= 30; s++) {
+        setup(s, 300);
+        CHECK(typing_snippet(NESTED, strlen(NESTED), NULL, NULL));
+        feed_all();
+        CHECK(strcmp(ed_text(), expect) == 0);
+        if (strcmp(ed_text(), expect) != 0) {
+            printf("  seed %u got:\n%s\n", (unsigned)s, ed_text());
+            break;
+        }
+    }
+}
+
+static int midway_calls;
+static void midway(void *ctx)
+{
+    (void)ctx;
+    midway_calls++;
+}
+
+static void test_midway_once(void)
+{
+    setup(5, 0);
+    midway_calls = 0;
+    typing_snippet(NESTED, strlen(NESTED), midway, NULL);
+    CHECK(midway_calls == 1);
+}
+
+static void test_snippet_crlf(void)
+{
+    const char *crlf = "class A {\r\nint x;\r\n}";
+    setup(6, 0);
+    typing_snippet(crlf, strlen(crlf), NULL, NULL);
+    feed_all();
+    CHECK(strcmp(ed_text(), "class A {\nint x;\n}\n") == 0);
+}
+
 int main(int argc, char **argv)
 {
+    RUN(test_check_line);
+    RUN(test_check_snippet);
+    RUN(test_snippet_typed_exactly);
+    RUN(test_midway_once);
+    RUN(test_snippet_crlf);
     RUN(test_nominal);
     RUN(test_exact_no_errors);
     RUN(test_errors_corrected);
