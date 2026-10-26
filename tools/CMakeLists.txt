@@ -20,6 +20,7 @@ add_library(core STATIC
     ${FW}/rhythm.c
     ${FW}/pointer.c
     ${FW}/typing.c
+    ${FW}/script.c
     sim/editor_model.c
 )
 target_include_directories(core PUBLIC ${FW} sim)
