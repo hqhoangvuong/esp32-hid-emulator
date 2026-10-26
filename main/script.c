@@ -61,8 +61,16 @@ static struct {
     int last;
 } choose_mem[MAX_CHOOSE_MEM];
 static int nchoose_mem;
+/* Last item picked from each pool, so no item repeats back to back. */
+static int pool_last[MAX_POOLS];
+/* What the last input was, for the keyboard/mouse hand-off pauses. */
+static enum { INPUT_NONE, INPUT_KEY, INPUT_POINTER, INPUT_CLICK } last_input;
 
 static void reset_run_state(void);
+static bool idle_nudge(void);
+static void trace(script_trace_t kind, span_t name, int depth, int index);
+static int call_def(const def_t *d);
+static int32_t arg_int(span_t *args);
 
 /* ---- text helpers ---- */
 
@@ -753,6 +761,7 @@ bool script_load(const char *dev, size_t dev_len, const char *snip, size_t snip_
         settings.scale = 100;
     }
     apply_settings();
+    rhythm_set_idle_hook(idle_nudge);
     if (!find_def_c("MAIN")) {
         problems++;
         hid_out_log("script: missing MAIN, refusing to run");
@@ -791,6 +800,272 @@ static void reset_run_state(void)
     state.fg = APP_CODE;
     nchoose_mem = 0;
     call_depth = 0;
+    last_input = INPUT_NONE;
+    for (int i = 0; i < MAX_POOLS; i++) {
+        pool_last[i] = -1;
+    }
+}
+
+/* ---- input commands ---- */
+
+#define KEY_LETTER(c) ((uint8_t)(KEY_A + ((c) - 'a')))
+
+static const rect_t *region_rect(span_t name)
+{
+    const region_ent_t *r = find_region(name);
+    return r ? &r->rect : NULL;
+}
+
+static const rect_t *region_rect_c(const char *name)
+{
+    span_t s = {name, strlen(name)};
+    return region_rect(s);
+}
+
+/* The region of whatever is in front: Chrome's page, the terminal panel, or the editor. */
+static const rect_t *fg_rect(void)
+{
+    if (state.fg == APP_CHROME) {
+        return region_rect_c("chrome_page");
+    }
+    if (state.terminal_open) {
+        const rect_t *t = region_rect_c("terminal");
+        if (t) {
+            return t;
+        }
+    }
+    return region_rect_c("editor");
+}
+
+static bool idle_nudge(void)
+{
+    const rect_t *r = fg_rect();
+    return r ? pointer_nudge(r) : true;
+}
+
+/* Random item of a pool, never the one picked last time. */
+static bool pool_pick(const pool_t *pl, const char **s, size_t *len, int *index)
+{
+    int n = pool_count_of(pl);
+    if (n == 0) {
+        return false;
+    }
+    int *last = &pool_last[pl - pools];
+    int i = (int)rhythm_rand(0, (uint32_t)(n - 1));
+    if (n > 1 && i == *last) {
+        i = (i + 1 + (int)rhythm_rand(0, (uint32_t)(n - 2))) % n;
+    }
+    *last = i;
+    *index = i;
+    return pool_scan(pl, i, s, len) > i;
+}
+
+static int lines_in(const char *s, size_t n)
+{
+    int count = 1;
+    for (size_t i = 0; i < n; i++) {
+        count += s[i] == '\n';
+    }
+    return count;
+}
+
+static void handoff_to_pointer(void)
+{
+    if (last_input == INPUT_KEY) {
+        rhythm_sleep(rhythm_rand(250, 900));
+    }
+}
+
+static void handoff_to_keys(void)
+{
+    if (last_input == INPUT_CLICK) {
+        rhythm_sleep(rhythm_rand(200, 700));
+    }
+}
+
+static bool focus(script_app_t app)
+{
+    if (state.fg == app) {
+        return true;
+    }
+    handoff_to_keys();
+    bool tab = false;
+    bool ok = typing_alt_tab(&tab);
+    if (tab) {
+        state.fg = app; /* releasing Alt completes the switch even if we are interrupted */
+    }
+    last_input = INPUT_KEY;
+    return ok;
+}
+
+static bool key_flip(uint8_t mod, uint8_t code, bool *flag, bool value)
+{
+    handoff_to_keys();
+    bool pressed = false;
+    bool ok = typing_key(mod, code, &pressed);
+    if (pressed) {
+        *flag = value;
+    }
+    last_input = INPUT_KEY;
+    return ok;
+}
+
+static bool cmd_search(span_t args)
+{
+    if (state.fg != APP_CHROME) {
+        hid_out_log("script: SEARCH needs chrome in front, skipped");
+        return true;
+    }
+    uint32_t now = hid_out_now_ms();
+    if (state.searched && (uint32_t)(now - state.last_search_ms) < settings.searchgap_s * 1000u) {
+        return true;
+    }
+    const pool_t *pl = find_pool(take(&args));
+    const char *q;
+    size_t n;
+    int idx;
+    if (!pl || !pool_pick(pl, &q, &n, &idx)) {
+        return true;
+    }
+    handoff_to_keys();
+    bool pressed = false;
+    bool ok = typing_key(KMOD_CTRL, KEY_LETTER('t'), &pressed);
+    if (pressed) {
+        state.search_open = true;
+        state.searched = true;
+        state.last_search_ms = now;
+    }
+    last_input = INPUT_KEY;
+    ok = ok && rhythm_sleep(rhythm_rand(400, 900)) && typing_text(q, n, TYPE_OMNIBOX);
+    ok = ok && typing_key(0, KEY_DELETE, NULL); /* drop any inline autocomplete */
+    if (ok && rhythm_rand(0, 99) < 15) {
+        ok = rhythm_sleep(rhythm_rand(300, 800)) && typing_key(0, KEY_DOWN, NULL);
+    }
+    return ok && rhythm_sleep(rhythm_rand(200, 600)) && typing_key(0, KEY_ENTER, NULL);
+}
+
+typedef struct {
+    const def_t *def;
+} midway_ctx_t;
+
+static void run_midway(void *ctx)
+{
+    const def_t *d = ((midway_ctx_t *)ctx)->def;
+    if (rhythm_rand(0, 99) < 40) {
+        trace(TRACE_CALL, d->name, call_depth + 1, 0);
+        call_def(d);
+        last_input = INPUT_KEY; /* typing resumes */
+    }
+}
+
+static bool cmd_code(span_t args)
+{
+    span_t name = take(&args), mid = take(&args);
+    const pool_t *pl = find_pool(name);
+    const char *s;
+    size_t n;
+    int idx;
+    if (!pl || !pool_pick(pl, &s, &n, &idx)) {
+        return true;
+    }
+    trace(TRACE_SNIPPET, pl->name, call_depth, idx);
+    handoff_to_keys();
+    last_input = INPUT_KEY;
+    state.lines += lines_in(s, n); /* counted up front: an over-estimate is safe */
+    midway_ctx_t ctx = {mid.n ? find_def(mid) : NULL};
+    return typing_snippet(s, n, ctx.def ? run_midway : NULL, &ctx);
+}
+
+/* Pointer commands; clicks are never sent while Chrome is in front. */
+static bool cmd_pointer(span_t c, span_t args)
+{
+    bool click = is(c, "CLICK") || is(c, "DBLCLICK") || is(c, "DRAGSELECT");
+    if (click && state.fg == APP_CHROME) {
+        hid_out_log("script: click suppressed while chrome is in front");
+        return true;
+    }
+    handoff_to_pointer();
+    last_input = click ? INPUT_CLICK : INPUT_POINTER;
+    if (is(c, "CLICK")) {
+        uint8_t b = is(args, "RIGHT") ? BTN_RIGHT : (is(args, "MIDDLE") ? BTN_MIDDLE : BTN_LEFT);
+        return pointer_click(b);
+    }
+    if (is(c, "DBLCLICK")) {
+        return pointer_dblclick();
+    }
+    if (is(c, "SCROLL")) {
+        return pointer_scroll((int)arg_int(&args));
+    }
+    if (is(c, "READSCROLL")) {
+        const rect_t *r = fg_rect();
+        return r ? pointer_readscroll((int)arg_int(&args), r) : true;
+    }
+    const rect_t *r = region_rect(take(&args));
+    if (!r) {
+        return true;
+    }
+    if (is(c, "GOTO")) {
+        return pointer_goto(r);
+    }
+    if (is(c, "HOVER")) {
+        return pointer_hover(r, (uint32_t)arg_int(&args));
+    }
+    if (is(c, "DRAGSELECT")) {
+        return pointer_dragselect(r);
+    }
+    return pointer_outline(r); /* OUTLINE */
+}
+
+/* Keyboard and pointer commands. Returns -1 if c is not one of them, else whether it ran
+ * without being aborted. */
+static int exec_input(span_t c, span_t args)
+{
+    if (is(c, "KEY")) {
+        uint8_t m, k;
+        if (!keys_parse_combo(args.p, args.n, &m, &k)) {
+            return 1;
+        }
+        handoff_to_keys();
+        last_input = INPUT_KEY;
+        return typing_key(m, k, NULL);
+    }
+    if (is(c, "TYPE")) {
+        handoff_to_keys();
+        last_input = INPUT_KEY;
+        if (args.n && args.p[0] == '@') {
+            span_t name = {args.p + 1, args.n - 1};
+            const pool_t *pl = find_pool(name);
+            const char *s;
+            size_t n;
+            int idx;
+            return !pl || !pool_pick(pl, &s, &n, &idx) || typing_text(s, n, 0);
+        }
+        return typing_text(args.p, args.n, 0);
+    }
+    if (is(c, "CODE")) {
+        return cmd_code(args);
+    }
+    if (is(c, "FOCUS")) {
+        return focus(is(args, "chrome") ? APP_CHROME : APP_CODE);
+    }
+    if (is(c, "TERMINAL")) {
+        bool want = is(args, "open");
+        return want == state.terminal_open || key_flip(KMOD_CTRL, KEY_GRAVE, &state.terminal_open, want);
+    }
+    if (is(c, "SEARCH")) {
+        return cmd_search(args);
+    }
+    if (is(c, "ENDSEARCH")) {
+        if (!state.search_open) {
+            return 1;
+        }
+        return focus(APP_CHROME) && key_flip(KMOD_CTRL, KEY_LETTER('w'), &state.search_open, false);
+    }
+    if (is(c, "GOTO") || is(c, "HOVER") || is(c, "CLICK") || is(c, "DBLCLICK") || is(c, "DRAGSELECT") ||
+        is(c, "SCROLL") || is(c, "READSCROLL") || is(c, "OUTLINE")) {
+        return cmd_pointer(c, args);
+    }
+    return -1;
 }
 
 void script_set_trace(void (*fn)(const script_event_t *ev, void *ctx), void *ctx)
@@ -965,6 +1240,10 @@ static int exec_cmd(span_t c, span_t args)
             trace(TRACE_CALL, d->name, call_depth + 1, 0);
         }
         return call_def(d);
+    }
+    int in = exec_input(c, args);
+    if (in >= 0) {
+        return in ? RUN_OK : RUN_ABORT;
     }
     hid_out_log("script: unknown command '%.*s'", (int)c.n, c.p);
     return RUN_OK;
