@@ -1,0 +1,6 @@
+{
+    "editor.acceptSuggestionOnEnter": "off",
+    "editor.acceptSuggestionOnCommitCharacter": false,
+    "editor.formatOnSave": true,
+    "files.autoSave": "off"
+}
